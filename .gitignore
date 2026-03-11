@@ -34,7 +34,6 @@ hs_err_pid*
 replay_pid*
 
 # === Project-specific (not tracked in PR #1) ===
-.github/
 artifacts/
 bin/
 
