@@ -2,7 +2,7 @@ name: Java CI and GHCR Push
 
 on:
   push:
-    branches: [ "devops/uhis-958" ]
+    branches: [ "release-1.0.0" ]
   workflow_dispatch:
 
 permissions:
@@ -73,20 +73,20 @@ jobs:
         docker push ${IMAGE_URI}:${VERSION_TAG}
         docker push ${IMAGE_URI}:latest
 
-  # trigger-deploy:
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   if: github.event_name == 'push' && github.ref == 'refs/heads/release-1.0.0' && success() # only for push to main and docker image is successfully created
-  #   env:
-  #     GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-  #   steps:
-  #     - name: Trigger deploy-scripts workflow_dispatch
-  #       run: |
-  #         gh api --method POST \
-  #           /repos/openphc/deploy-scripts/actions/workflows/deploy.yml/dispatches \
-  #           --input - <<'JSON'
-  #         {
-  #           "ref": "main",
-  #           "inputs": { "target_env": "dev" }
-  #         }
-  #         JSON
+  trigger-deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release-1.0.0' && success()
+    env:
+      GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+    steps:
+      - name: Trigger deploy-scripts workflow_dispatch
+        run: |
+          gh api --method POST \
+            /repos/openphc/deploy-scripts/actions/workflows/deploy.yml/dispatches \
+            --input - <<'JSON'
+          {
+            "ref": "main",
+            "inputs": { "target_env": "dev" }
+          }
+          JSON
