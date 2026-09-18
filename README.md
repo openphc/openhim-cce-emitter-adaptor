@@ -4,6 +4,8 @@
 
 The **CCE Emitter Adaptor** is a generic [OpenHIM mediator](https://openhim.org/) built as a standard **Spring Boot 3.x** application. It is configurable for different source systems — currently configured for **eBUZIMA EMR**. It receives FHIR R4 resource payloads via OpenHIM Core (secondary route), wraps them in CloudEvents v1.0 envelopes, and forwards them to the CCE Collector. The input is any valid individual FHIR resource (e.g., Encounter, Observation). Bundle resources are silently ignored (out of scope for v1.0).
 
+Clinical findings are **removed before the event is forwarded**: CCE records *that* a clinical step happened, for which patient, at which facility and when — not *what the finding was*. See [Data Dictionary §3.6](docs/data-dictionary.md) for the exact fields and rationale.
+
 **No third-party mediator library is used** — the OpenHIM mediator contract (registration, heartbeat, response envelope) is implemented via custom Spring components.
 
 ## Tech Stack
@@ -64,6 +66,7 @@ eBUZIMA EMR → OpenHIM Core → Emitter Adaptor → CCE Collector → Kafka
 | `InboundEventService` | Orchestrates pipeline: adapt → forward → wrap (+ metrics + MDC) |
 | `SourceAdaptorService` | Config-driven source resolution; parses FHIR resources, builds CloudEvents |
 | `CollectorForwardingService` | `@Retryable` — POSTs CloudEvents to Collector via `RestClient` (+ latency timer) |
+| `ClinicalDataRedactor` | Strips clinical findings and the patient name from the payload before forwarding |
 | `MediatorRegistrar` | Registers with OpenHIM Core on startup |
 | `HeartbeatScheduler` | `@Scheduled` — periodic heartbeat for liveness |
 | `OpenHimResponseWrapper` | Wraps responses in `application/json+openhim` format |
@@ -79,6 +82,7 @@ src/main/java/org/openphc/cce/emitter/
 ├── adaptor/           # SourceAdaptorService (config-driven source routing)
 ├── cloudevents/       # CloudEventEnvelopeBuilder, EventIdGenerator
 ├── fhir/              # FhirResourceParser, PatientIdExtractor
+├── redaction/         # ClinicalDataRedactor (clinical data minimisation)
 ├── service/           # InboundEventService (pipeline orchestration), CollectorForwardingService
 ├── model/             # DTOs (CloudEventDto, InboundRequest, ProcessedEventsResponse, etc.)
 └── exception/         # Custom exceptions + GlobalExceptionHandler
@@ -142,6 +146,7 @@ docker compose up -d
 
 | Document | Description |
 |----------|-------------|
+| [Adaptor Development Guide](cce-adaptor-guide/adaptor-development-guide.md) | How to build a new CCE emitter adaptor (any stack): CloudEvents contract, Gateway auth, Collector API, retries, testing. Standalone folder — zip `cce-adaptor-guide/` to share |
 | [Architecture Overview](docs/architecture-overview.md) | System context, tech stack, package structure, processing pipeline, security, deployment, observability |
 | [Developer Setup](docs/developer-setup.md) | Build, run, Docker, integration tests |
 | [Data Dictionary](docs/data-dictionary.md) | Field definitions, configuration properties, metrics, MDC context |

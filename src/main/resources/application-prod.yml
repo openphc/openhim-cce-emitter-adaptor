@@ -39,6 +39,18 @@ cce:
       client-secret: ${KEYCLOAK_CLIENT_SECRET:}
   emitter:
     patient-identifier-system: ${PATIENT_IDENTIFIER_SYSTEM:http://openphc.org/identifier/upid}
+    redaction:
+      # The `rules` (the "*" entry plus one per resourceType) are defined ONCE, in application.yml, and
+      # apply here unchanged - profile files layer over the base, so anything not restated is
+      # inherited. They are deliberately not duplicated: two copies would drift, and the PROD copy
+      # drifting is precisely the failure that leaks clinical data.
+      #
+      # To change what is redacted in PROD, edit application.yml. Restating `rules` here REPLACES
+      # the base list wholesale (Spring does not merge lists), so only do so to redact MORE.
+      #
+      # Setting this to false forwards full clinical payloads to the Collector, which persists them
+      # to inbound_event_log. Only for a time-boxed debugging window, never routine.
+      enabled: ${REDACTION_ENABLED:true}
     facility-filter:
       ids: ${FACILITY_FILTER_IDS:}   # empty = filter inactive; comma-separated to restrict (e.g. "0234,abc-123")
     sources:

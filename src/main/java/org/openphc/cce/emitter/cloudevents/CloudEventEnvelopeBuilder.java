@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.openphc.cce.emitter.exception.FhirMappingException;
 import org.openphc.cce.emitter.model.CloudEventDto;
 import org.openphc.cce.emitter.model.SourceMetadata;
+import org.openphc.cce.emitter.redaction.ClinicalDataRedactor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -29,10 +30,14 @@ public class CloudEventEnvelopeBuilder {
 
     private final EventIdGenerator idGenerator;
     private final ObjectMapper objectMapper;
+    private final ClinicalDataRedactor clinicalDataRedactor;
 
-    public CloudEventEnvelopeBuilder(EventIdGenerator idGenerator, ObjectMapper objectMapper) {
+    public CloudEventEnvelopeBuilder(EventIdGenerator idGenerator,
+                                     ObjectMapper objectMapper,
+                                     ClinicalDataRedactor clinicalDataRedactor) {
         this.idGenerator = idGenerator;
         this.objectMapper = objectMapper;
+        this.clinicalDataRedactor = clinicalDataRedactor;
     }
 
     /**
@@ -46,7 +51,11 @@ public class CloudEventEnvelopeBuilder {
      * @throws FhirMappingException if the FHIR JSON cannot be parsed into a JsonNode
      */
     public CloudEventDto build(String fhirJson, String patientUpid, String resourceType, SourceMetadata meta) {
-        JsonNode data = parseToJsonNode(fhirJson);
+        // Redaction happens here, at the point the payload is turned into the outbound event —
+        // deliberately AFTER patient UPID, facility ID and clinical time have been extracted from
+        // the complete resource upstream, so stripping clinical content cannot affect routing,
+        // facility attribution or SLA timing. Everything persisted downstream is the minimised form.
+        JsonNode data = clinicalDataRedactor.redact(parseToJsonNode(fhirJson));
         String eventId = idGenerator.generate(meta);
         String eventTime = meta.eventTime() != null
                 ? meta.eventTime().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)

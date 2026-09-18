@@ -41,6 +41,16 @@ import static org.assertj.core.api.Assertions.*;
  */
 class SourceAdaptorServiceTest {
 
+    /**
+     * Production-equivalent redactor: these tests exercise envelope building and adaptor routing,
+     * both of which must behave identically with redaction switched on (as it is in production).
+     */
+    private static org.openphc.cce.emitter.redaction.ClinicalDataRedactor testRedactor() {
+        return new org.openphc.cce.emitter.redaction.ClinicalDataRedactor(
+                new org.openphc.cce.emitter.redaction.ClinicalDataRedactionProperties(true, null),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+    }
+
     private static final String SOURCE_KEY = "ebuzima";
     private static final String CLIENT_ID = "ebuzima-emr-client";
     private static final String PATIENT_UPID = "260225-0002-5501";
@@ -58,7 +68,7 @@ class SourceAdaptorServiceTest {
         FacilityIdExtractor facilityIdExtractor = new FacilityIdExtractor();
         ObjectMapper objectMapper = new ObjectMapper();
         EventIdGenerator idGenerator = new EventIdGenerator();
-        CloudEventEnvelopeBuilder envelopeBuilder = new CloudEventEnvelopeBuilder(idGenerator, objectMapper);
+        CloudEventEnvelopeBuilder envelopeBuilder = new CloudEventEnvelopeBuilder(idGenerator, objectMapper, testRedactor());
 
         EmitterProperties emitterProperties = new EmitterProperties(
                 Map.of(SOURCE_KEY, new SourceProperties(CLIENT_ID)),
@@ -168,7 +178,7 @@ class SourceAdaptorServiceTest {
             FhirResourceParser fhirResourceParser = new FhirResourceParser(fhirContext);
             ObjectMapper objectMapper = new ObjectMapper();
             EventIdGenerator idGenerator = new EventIdGenerator();
-            CloudEventEnvelopeBuilder envelopeBuilder = new CloudEventEnvelopeBuilder(idGenerator, objectMapper);
+            CloudEventEnvelopeBuilder envelopeBuilder = new CloudEventEnvelopeBuilder(idGenerator, objectMapper, testRedactor());
 
             EmitterProperties emitterProperties = new EmitterProperties(Map.of(
                     "ebuzima", new SourceProperties("ebuzima-emr-client"),
@@ -214,7 +224,7 @@ class SourceAdaptorServiceTest {
             FhirResourceParser fhirResourceParser = new FhirResourceParser(fhirContext);
             ObjectMapper objectMapper = new ObjectMapper();
             EventIdGenerator idGenerator = new EventIdGenerator();
-            CloudEventEnvelopeBuilder envelopeBuilder = new CloudEventEnvelopeBuilder(idGenerator, objectMapper);
+            CloudEventEnvelopeBuilder envelopeBuilder = new CloudEventEnvelopeBuilder(idGenerator, objectMapper, testRedactor());
 
             EmitterProperties emitterProperties = new EmitterProperties(Map.of(),
                     "http://openphc.org/identifier/upid");
@@ -648,7 +658,7 @@ class SourceAdaptorServiceTest {
             FhirResourceParser parser = new FhirResourceParser(fhirContext);
             ObjectMapper objectMapper = new ObjectMapper();
             CloudEventEnvelopeBuilder envelopeBuilder =
-                    new CloudEventEnvelopeBuilder(new EventIdGenerator(), objectMapper);
+                    new CloudEventEnvelopeBuilder(new EventIdGenerator(), objectMapper, testRedactor());
             EmitterProperties props = new EmitterProperties(
                     Map.of(SOURCE_KEY, new SourceProperties(CLIENT_ID)),
                     "http://openphc.org/identifier/upid");

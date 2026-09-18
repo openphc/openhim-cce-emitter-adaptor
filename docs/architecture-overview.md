@@ -169,6 +169,11 @@ org.openphc.cce.emitter/
 │   ├── FacilityFilter.java                        #   Spring bean: enforceFilter() — throws on deny, increments counter
 │   └── FacilityFilterProperties.java              #   @ConfigurationProperties("cce.emitter.facility-filter")
 │
+├── redaction/                                     # Clinical data minimisation
+│   ├── ClinicalDataRedactor.java                  #   Strips clinical findings + patient name from the outbound payload
+│   │                                              #   "*" rule + the type's own; entries are fields or paths ([] = array)
+│   └── ClinicalDataRedactionProperties.java       #   @ConfigurationProperties("cce.emitter.redaction") — "*" rule + per-resourceType additions
+│
 ├── service/                                       # Business logic
 │   ├── InboundEventService.java                   #   Orchestrates pipeline: adapt → forward → wrap (+ metrics + MDC)
 │   ├── CollectorForwardingService.java            #   @Retryable: POST to Collector via RestClient (+ latency timer)
@@ -237,9 +242,12 @@ Single `@Component` that reads `cce.emitter.sources` config (sourceKey → clien
 | 1 | `InboundEventController` | Receives HTTP POST, creates `InboundRequest`, delegates to `InboundEventService`, serializes returned `OpenHimResponse` as `application/json+openhim` |
 | 2 | `InboundEventService.process()` | Orchestrates the full pipeline (steps 3–6), returns `OpenHimResponse` |
 | 3 | `SourceAdaptorService.resolveSource()` | Matches `X-OpenHIM-ClientID` / `X-Source-System` headers against configured sources |
-| 4 | `SourceAdaptorService.adapt()` | Parses FHIR resource, resolves facility ID, applies facility filter (throws 403 on denial), builds `List<CloudEventDto>` |
+| 4 | `SourceAdaptorService.adapt()` | Parses FHIR resource, extracts patient UPID + facility ID + clinical time from the **complete** resource, applies facility filter (throws 403 on denial), builds `List<CloudEventDto>` |
+| 4a | `ClinicalDataRedactor.redact()` | Inside `CloudEventEnvelopeBuilder.build()`: strips clinical findings and the patient name from the payload that becomes CloudEvent `data`. Runs **after** all extraction in step 4, so it cannot affect routing, facility attribution or SLA timing |
 | 5 | `CollectorForwardingService.forward()` | POSTs each CloudEvent to Collector via `RestClient`; `@Retryable` on 5xx |
 | 6 | `OpenHimResponseWrapper.wrap()` | Wraps response + orchestration log in `application/json+openhim` format |
+
+**Data minimisation boundary.** Step 4a is the point past which clinical findings no longer exist in the system. Everything downstream — the Collector's `inbound_event_log`, the Kafka topic, `compliance_event_log`, and the ClickHouse analytics mirror — stores only the minimised payload. CCE retains *that* a clinical step occurred, for whom, where and when; it no longer retains *what the finding was*. See §3.6 of the [Data Dictionary](data-dictionary.md) for the exact field lists and the rationale for what is kept.
 
 ## 8. External Interfaces
 
@@ -300,6 +308,7 @@ Errors are handled by `GlobalExceptionHandler` (`@ControllerAdvice`):
 | **Mediator → OpenHIM Core API** | Basic auth (`root@openhim.org` / password) for registration + heartbeat |
 | **Mediator → CCE Collector** | OAuth2 client credentials via Keycloak (`CollectorTokenService`). Fetches and caches access tokens automatically. Falls back to static Bearer token (`cce.collector.auth.token`) when Keycloak is not configured. Emitter authenticates independently with the CCE Gateway (separate trust boundary from inbound OpenHIM auth). |
 | **TLS** | HTTPS connections configurable via Spring Boot `server.ssl.*` properties |
+| **Clinical data minimisation** | `ClinicalDataRedactor` strips clinical findings and the patient's name (`subject.display` / `patient.display`) from every payload before it is forwarded. Rules are **per resource type**, because the same element differs in sensitivity: `code` is the diagnosis on `Condition`, the allergen on `AllergyIntolerance` and the test ordered on `ServiceRequest` (all removed), but the observation *type* on `Observation` (kept — protocol triggers match on it). All 10 resource types seen in production have an explicit rule. CCE never persists what the clinical finding was — only that the step occurred, for which patient (UPID), at which facility, and when. Controlled by `cce.emitter.redaction.*`; see §3.6 of the [Data Dictionary](data-dictionary.md). Redaction log lines record field **names** only, never their values. | Content nested inside structures that must be kept (e.g. `Encounter.hospitalization.dischargeDisposition`) is removed by a dotted path on that type's rule.
 
 ## 12. Deployment
 
@@ -310,7 +319,7 @@ Errors are handled by `GlobalExceptionHandler` (`@ControllerAdvice`):
 | **Liveness** | `/actuator/health/liveness` |
 | **Readiness** | `/actuator/health/readiness` |
 | **Metrics** | `/actuator/prometheus` |
-| **Key env vars** | `OPENHIM_CORE_HOST`, `CCE_COLLECTOR_URL`, `KEYCLOAK_HOST`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `FACILITY_FILTER_IDS`, `SPRING_PROFILES_ACTIVE` |
+| **Key env vars** | `OPENHIM_CORE_HOST`, `CCE_COLLECTOR_URL`, `KEYCLOAK_HOST`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `FACILITY_FILTER_IDS`, `REDACTION_ENABLED`, `SPRING_PROFILES_ACTIVE` |
 
 ### Docker
 
@@ -349,6 +358,8 @@ Registered in `InboundEventService` and `CollectorForwardingService` via constru
 | `cce.emitter.collector.latency` | Timer | — | `CollectorForwardingService` | Collector forwarding round-trip latency |
 | `cce.emitter.collector.retries` | Counter | — | `CollectorForwardingService` | Retry attempts exhausted |
 | `cce.emitter.events.filtered` | Counter | `source`, `facility`, `reason` | `FacilityFilter` | Events denied by facility filter (`reason`: `NOT_IN_ALLOWLIST`). Events with no facility ID pass through and are not counted. |
+| `cce.emitter.events.redacted.total` | Counter | `resource_type` | `ClinicalDataRedactor` | Events from which at least one clinical field was removed (once per event, not per field) |
+| `cce.emitter.redaction.path.mismatch.total` | Counter | `resource_type`, `path` | `ClinicalDataRedactor` | A configured nested redaction path matched nothing — that path is redacting nothing |
 
 ### Structured Logging (MDC)
 

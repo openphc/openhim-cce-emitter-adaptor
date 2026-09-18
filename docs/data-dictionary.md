@@ -148,7 +148,116 @@ Prefix: `cce.emitter.facility-filter`
 
 **Skip behaviour:** Events with a facility ID that is not in the allowlist return `200 OK` with `status: "skipped"` — they are not forwarded to the Collector and OpenHIM records the transaction as Completed. Events with no facility ID are passed through unconditionally — only events that carry a resolved facility ID are subject to filtering. `FacilityIdExtractor` resolves the facility ID from, for `Encounter`, `hospitalization.origin` first and `location[0].location` as a fallback (per FHIR R4, `hospitalization` is only ever populated on a `TRANSFER_ENCOUNTER`; the `source-facility` extension is deliberately never consulted for `Encounter`); for other types, `locationReference[0]` (e.g. `ServiceRequest`) or a direct `location` reference (e.g. `Procedure`, `Immunization`), falling back to the `source-facility` extension for types with no FHIR location at all (e.g. `Observation`, `Condition`). Any `ResourceType/` prefix is stripped generically so both `Location/1302` and `Organization/1302` compare as `1302`. Resources with no location fields and no extension (e.g. `Patient`, `RelatedPerson`) resolve to `null` and always pass through.
 
-### 3.5 Server Properties
+### 3.6 Clinical Data Redaction Properties
+
+Prefix: `cce.emitter.redaction`
+
+CCE is a care **coordination** engine: it needs to know *that* a clinical step happened, when, for which patient and at which facility — not *what the clinical finding was*. Redaction removes the finding before the event leaves the adaptor, so no downstream store (`inbound_event_log`, Kafka, `compliance_event_log`, the ClickHouse mirror) ever receives it.
+
+| Property | Type | Default | Env Var | Description |
+|----------|------|---------|---------|-------------|
+| `cce.emitter.redaction.enabled` | Boolean | `true` | `REDACTION_ENABLED` | Master switch. `false` forwards full clinical payloads and logs a startup warning. |
+| `cce.emitter.redaction.rules` | List\<ResourceRule\> | see below | — (YAML) | One entry per resource type, plus the `"*"` entry. Empty = built-in defaults. |
+
+Each `ResourceRule` is `{ resource-type, fields }`.
+
+#### How rules combine
+
+The rule with `resource-type: "*"` applies to **every** resource. A resource's own rule is applied **on top of it**. So each type lists only what is special about that type, and content that is sensitive everywhere is written once:
+
+```
+Condition    →  the "*" list  +  code
+Observation  →  the "*" list  +  component      (code deliberately absent)
+SomeNewType  →  the "*" list                    (no rule of its own)
+```
+
+There is deliberately no second wildcard for "types without a rule of their own": such a type is simply one with nothing to add, and `"*"` already covers it. One token, one meaning.
+
+#### Why rules are per resource type
+
+The same FHIR element carries very different sensitivity depending on the resource. `code` is the clearest case:
+
+| Resource | `code` means | Action |
+|----------|--------------|--------|
+| `Condition` | the diagnosis — *"Type 2 diabetes mellitus"* (ICD-11 `5A11`) | **removed** |
+| `AllergyIntolerance` | the allergen — *"allergy on aminophyline"* | **removed** |
+| `ServiceRequest` | the test ordered — *"a1-Acid Glycoprotein"* | **removed** |
+| `Observation` | the observation **type** — LOINC `33747-0` "Chief Complaints", `8716-3` "Vital signs" | **kept** — protocol triggers match on it; removing it would stop compliance tracking working |
+
+A single flat field list cannot express this, which is why rules are keyed by resource type.
+
+#### Default rules
+
+The `"*"` rule — applied to every resource. Clinical content that is sensitive wherever it appears and that nothing downstream reads, plus the patient's name:
+
+```
+valueQuantity, valueCodeableConcept, valueString, valueBoolean, valueInteger,
+valueRange, valueRatio, valueSampledData, valueTime, valueDateTime, valuePeriod,
+valueAttachment, note, text, interpretation, dataAbsentReason, bodySite, method,
+specimen, referenceRange, contained, severity, stage, evidence, dosageInstruction,
+reasonCode, reasonReference, orderDetail, patientInstruction,
+subject.display, patient.display
+```
+
+`subject.display` / `patient.display` are the patient's name — not clinical data, but direct identifying data in the same payload, and nothing downstream reads it; the patient is keyed on `subject.reference` / `patient.reference` (the UPID), which is preserved. Both spellings are needed because `AllergyIntolerance` and several other types use `patient` rather than `subject`.
+
+Plus, per type — each listing **only its additions** to the above. Every resource type observed in Rwanda production has an explicit rule (PROD volumes shown), so a type can never fall through to the wildcard unnoticed:
+
+| `resource-type` | PROD volume | Entries (added to the `"*"` list) | Rationale |
+|-----------------|-------------|---------------------------|-----------|
+| `Observation` | 141,036 | `component` | Sub-observations, each with their own `value[x]`. **`code` kept** — it is the LOINC trigger key. |
+| `Encounter` | 47,708 | `diagnosis`, `hospitalization.dischargeDisposition` | `type` kept — carries `VISIT_ENCOUNTER` / `CONSULTATION_ENCOUNTER` / `TRANSFER_ENCOUNTER`, which drive protocol matching and the referral KPI. `class`, `serviceType`, `period`, `location`, `hospitalization`, `participant` kept. `reasonCode` removed via the common set. |
+| `ServiceRequest` | 32,780 | `code` | The test requested. `category` kept (distinguishes a laboratory order), as are `intent`, `occurrenceDateTime` and `locationReference`. |
+| `MedicationRequest` | 30,166 | `medicationCodeableConcept`, `medicationReference`, `dispenseRequest` | The drug, and the quantity/refills. `intent` kept — protocol conditions read it — as are `authoredOn`, `requester`, `status`. |
+| `Condition` | 24,972 | `code` | The diagnosis itself. `clinicalStatus` / `verificationStatus` kept — the Rwanda protocol's diagnosis step triggers on them. |
+| `MedicationDispense` | 20,472 | `medicationCodeableConcept`, `medicationReference`, `quantity` | The drug and how much. `whenHandedOver` kept — a clinical-time field the SLA engine reads. |
+| `Consent` | 15,761 | — (nothing to add) | Carries no clinical finding; `category`, `scope`, `status` and `dateTime` are consent metadata and are what the Consent step matches on. Listed explicitly so it is documented as reviewed. |
+| `Procedure` | 4,174 | `code`, `outcome`, `complication` | The procedure performed and its result. `performedDateTime`, `location`, `performer` kept. |
+| `MedicationAdministration` | 1,614 | `medicationCodeableConcept`, `medicationReference`, `dosage`, `supportingInformation` | The drug, the amount given, and references that may point at clinical data. |
+| `AllergyIntolerance` | 22 | `code`, `reaction` | The allergen and reaction detail. `clinicalStatus` / `verificationStatus` / `onsetDateTime` / `recordedDate` kept. |
+| `Immunization` | 0 | `vaccineCode` | Not currently received. Pre-declared so a new feed cannot leak the vaccine given before anyone notices the type is unhandled. |
+| `*` | — | the common set above | Applied to **every** resource, including types with no entry of their own. Conservative: leaves `code` alone, since on an unrecognised type it may be structural rather than a finding. `ClinicalDataRedactorTest.coversAllProductionResourceTypes` fails if a production type loses its explicit entry. |
+
+#### Entry syntax
+
+An entry is either a root field name or a dot-delimited path. A segment ending in `[]` steps through an array and applies to *every* element:
+
+```
+code                                   → Condition.code
+subject.display                        → Observation.subject.display
+hospitalization.dischargeDisposition   → Encounter.hospitalization.dischargeDisposition
+reaction[].manifestation               → AllergyIntolerance.reaction[*].manifestation
+series[].instance[].title              → ImagingStudy.series[*].instance[*].title
+```
+
+The `[]` is **required** wherever the data is an array. Without it the path walks into objects only and matches nothing.
+
+> ⚠️ A path that matches nothing is the dangerous failure mode for a compliance control: it looks configured and redacts nothing. This is therefore **not silent** — where a path meets an array without `[]`, the adaptor logs a warning naming the path and the fix, and increments `cce.emitter.redaction.path.mismatch.total`. Alert on that counter being non-zero.
+
+**Prefer removing a whole structure over pathing into it.** `component` on `Observation` drops every sub-observation's `value[x]` in one step. Reach for a path only when part of the structure must survive — the one current case:
+
+| `resource-type` | Path | Why it cannot be a root field |
+|-----------------|------|-------------------------------|
+| `Encounter` | `hospitalization.dischargeDisposition` | The discharge outcome ("Died in hospital", "Transferred to ICU") is clinical, but its parent `hospitalization` is kept because `hospitalization.origin` is a facility source. |
+
+A path whose structure is simply **absent** from a payload is normal — most encounters have no `hospitalization` — and is not reported. Only a type conflict, which means the configuration can never work, is.
+
+#### What is preserved, and why
+
+Protocol matching, SLA evaluation, facility attribution or the Insights dashboard read each of these: `resourceType`, `category`, `type`, `class`, `status`, `clinicalStatus`, `verificationStatus`, `serviceType`, `intent`, `identifier`, `subject.reference`, `subject.identifier`, `encounter`, `performer`/`participant`/`requester`/`asserter`, every clinical-time field (`effectiveDateTime`, `issued`, `period`, `occurrenceDateTime`, `authoredOn`, `onsetDateTime`, `recordedDate`, …), and every facility source (`location[]`, `locationReference`, `hospitalization.origin`, and the `source-facility` / `location` extensions).
+
+#### Behaviour notes
+
+- **Never a blanket recursive scrub.** Named root-level fields plus explicitly configured nested paths. A recursive scrub would also strip the `valueString` *inside* `extension[]` — which is how `source-facility` attribution works — and the `coding`/`display` elements the dashboard renders. Every nested removal is something a human chose.
+- **Removing a whole structure is cheaper and safer than pathing into it.** Removing a named field drops the entire subtree in one step, so `component` on `Observation` takes every sub-observation's `value[x]` with it. Reach for a dotted path only when part of the structure must survive.
+- **Entry order does not matter.** Each removal is independent, and the `"*"` rule and the type's own rule are simply applied in turn. Listing `component` first or last changes nothing.
+- **Ordering guarantee.** Redaction runs inside `CloudEventEnvelopeBuilder.build()`, i.e. *after* `PatientIdExtractor`, `FacilityIdExtractor` and clinical-time extraction have read the complete resource. Stripping clinical content therefore cannot affect routing, facility attribution or SLA timing.
+- **FHIR validity.** The Collector re-parses every payload with HAPI and rejects malformed bodies as `INVALID_FHIR`. Redacted payloads remain structurally valid FHIR R4 — covered by `RedactedPayloadStillValidFhirTest`.
+- **Logging.** Redaction log lines record field **names** only, never their values.
+- **Scope.** Applies to events from deployment onward. Payloads stored before the change are unaffected and would need a separate backfill.
+- **Known trade-off.** The Insights "zero-match events" drill-down displays `code.text` / `code.coding[0].display` for every resource type. For `Condition`, `AllergyIntolerance` and `ServiceRequest` that column will now be blank, since `code` no longer reaches the database. This is a deliberate consequence of removing the diagnosis/allergen/test name.
+
+### 3.7 Server Properties
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -311,6 +420,8 @@ Registered in `InboundEventService` and `CollectorForwardingService` via constru
 | `cce.emitter.collector.latency` | Timer | — | `CollectorForwardingService` | Collector forwarding round-trip latency |
 | `cce.emitter.collector.retries` | Counter | — | `CollectorForwardingService` | Retry attempts exhausted |
 | `cce.emitter.events.filtered` | Counter | `source`, `facility`, `reason` | `FacilityFilter` | Events skipped by facility filter (not forwarded). `reason` value: `NOT_IN_ALLOWLIST`. |
+| `cce.emitter.events.redacted.total` | Counter | `resource_type` | `ClinicalDataRedactor` | Events from which at least one clinical field was removed. Incremented once per event, not once per field. A sustained drop to zero while `events.received` stays healthy means redaction has been switched off or the inbound payload shape has changed. |
+| `cce.emitter.redaction.path.mismatch.total` | Counter | `resource_type`, `path` | `ClinicalDataRedactor` | A configured dotted path matched nothing because an array was found where an object was expected. **Non-zero means that path is redacting nothing** — add `[]` to the segment named in the accompanying warning. |
 
 ## 8. MDC Context Fields
 

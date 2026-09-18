@@ -17,6 +17,8 @@ All custom metrics are exposed at `GET /actuator/prometheus` and use the `cce_em
 | `cce_emitter_collector_latency_seconds` | Timer | — | Collector forwarding round-trip latency (count, sum, max, percentiles) |
 | `cce_emitter_collector_retries_total` | Counter | — | Retry attempts exhausted (all retries failed) |
 | `cce_emitter_events_filtered_total` | Counter | `source`, `facility`, `reason` | Events skipped by facility filter (not forwarded; response is 200 OK). `reason`: `NOT_IN_ALLOWLIST`. Events with no facility ID pass through and are not counted. |
+| `cce_emitter_events_redacted_total` | Counter | `resource_type` | Events from which at least one clinical field was removed before forwarding (once per event, not per field). |
+| `cce_emitter_redaction_path_mismatch_total` | Counter | `resource_type`, `path` | A configured nested redaction path matched nothing (array found where an object was expected). Non-zero means that path is redacting nothing. |
 
 ### JVM & Spring Boot Metrics (auto-registered)
 
@@ -128,6 +130,36 @@ groups:
           summary: "CCE Emitter facility filter denying >50% of events"
           description: "More than 50% of events are being skipped by the facility filter for >5 minutes. May indicate a misconfigured allowlist or missing facility IDs."
           runbook: "Check FACILITY_FILTER_IDS env var. Use topk Prometheus query to identify which facilities are being skipped. Verify source systems are sending X-Facility-Id header."
+
+      # Clinical-data redaction has stopped taking effect.
+      # This is a compliance control, not a performance one: if it silently stops firing while
+      # events keep arriving, clinical findings are being persisted downstream again.
+      - alert: CceEmitterRedactionNotApplied
+        expr: increase(cce_emitter_events_received_total[30m]) > 0
+              and increase(cce_emitter_events_redacted_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: critical
+          service: cce-emitter-adaptor
+        annotations:
+          summary: "CCE Emitter is forwarding events without redacting clinical data"
+          description: "Events are being received but no clinical fields have been removed for 30 minutes. Clinical findings may now be persisting in inbound_event_log, compliance_event_log and ClickHouse."
+          runbook: "Check REDACTION_ENABLED (must be true) and the startup log line 'Clinical-data redaction ACTIVE'. If redaction is on, the inbound payload shape may have changed — compare a live payload against the field list in docs/data-dictionary.md §3.6."
+
+      # A configured redaction path is matching nothing.
+      # Distinct from the alert above: redaction IS running, but one nested path was written
+      # without the `[]` array marker, so it removes nothing while looking correctly configured.
+      # Whoever added it almost certainly believes that content is being stripped.
+      - alert: CceEmitterRedactionPathMatchesNothing
+        expr: increase(cce_emitter_redaction_path_mismatch_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: cce-emitter-adaptor
+        annotations:
+          summary: "CCE Emitter redaction path '{{ $labels.path }}' is redacting nothing ({{ $labels.resource_type }})"
+          description: "A configured redaction path expects an object but the payload holds an array, so the path matches nothing and that content is being forwarded."
+          runbook: "Find the WARN line 'Redaction path ... does not match' in the emitter log — it names the offending segment and the corrected form. Add '[]' to that segment in application.yml (e.g. reaction.manifestation -> reaction[].manifestation) and redeploy. See docs/data-dictionary.md §3.6 'Nested paths'."
 
       # No events received for extended period (during business hours)
       - alert: CceEmitterNoEventsReceived

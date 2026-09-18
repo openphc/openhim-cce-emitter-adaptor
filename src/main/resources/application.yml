@@ -47,6 +47,89 @@ cce:
       client-secret:
   emitter:
     patient-identifier-system: "http://openphc.org/identifier/upid"
+    redaction:
+      # Clinical-data minimisation. CCE records THAT a clinical step happened — never
+      # WHAT the finding was. Full rationale: docs/data-dictionary.md §3.6
+      #
+      # HOW RULES COMBINE: the "*" rule applies to EVERY resource. A resource's own rule is
+      # applied ON TOP of it, so each type below lists only what is special about that type.
+      #
+      # ENTRY SYNTAX: a root field name (`code`) or a dot-delimited path
+      # (`hospitalization.dischargeDisposition`). A segment ending in `[]` steps through an
+      # array and applies to every element (`reaction[].manifestation`). The `[]` is REQUIRED
+      # where the data is an array; without it the path matches nothing. That is not silent —
+      # the adaptor logs a warning and increments cce.emitter.redaction.path.mismatch.total.
+      #
+      # Prefer removing a whole structure over pathing into it: `component` on Observation
+      # drops every sub-observation in one step.
+      enabled: true
+      rules:
+        # ── Applied to EVERY resource ───────────────────────────────────────────────────
+        # value[x] and free-text clinical content, plus the patient's name. subject.reference /
+        # patient.reference (the UPID) are preserved — that is how CCE keys the patient.
+        - resource-type: "*"
+          fields: >-
+            valueQuantity, valueCodeableConcept, valueString, valueBoolean, valueInteger, valueRange,
+            valueRatio, valueSampledData, valueTime, valueDateTime, valuePeriod, valueAttachment, note, text,
+            interpretation, dataAbsentReason, bodySite, method, specimen, referenceRange, contained, severity,
+            stage, evidence, dosageInstruction, reasonCode, reasonReference, orderDetail, patientInstruction,
+            subject.display, patient.display
+
+        # ── Additions per resource type ─────────────────────────────────────────────────
+        # Every type seen in Rwanda has an entry, so none can be overlooked. PROD volumes shown.
+
+        # 141k. code KEPT — it is the observation TYPE (LOINC) and protocol triggers match on it.
+        # component holds sub-observations, each with their own value[x].
+        - resource-type: Observation
+          fields: component
+
+        # 48k. type/class/serviceType KEPT — drive protocol matching + the referral KPI.
+        # hospitalization KEPT for facility attribution (hospitalization.origin), so its clinical
+        # child needs a path rather than a root field.
+        - resource-type: Encounter
+          fields: diagnosis, hospitalization.dischargeDisposition
+
+        # 33k. code = the test ordered; category KEPT (identifies a laboratory order).
+        - resource-type: ServiceRequest
+          fields: code
+
+        # 30k. The drug, quantity and refills; intent + authoredOn KEPT.
+        - resource-type: MedicationRequest
+          fields: medicationCodeableConcept, medicationReference, dispenseRequest
+
+        # 25k. code = the diagnosis; clinicalStatus/verificationStatus KEPT (trigger keys).
+        - resource-type: Condition
+          fields: code
+
+        # 20k. The drug and amount; whenHandedOver KEPT (clinical time).
+        - resource-type: MedicationDispense
+          fields: medicationCodeableConcept, medicationReference, quantity
+
+        # 16k. No clinical finding — category/scope/status are consent metadata and are KEPT.
+        # Listed with nothing to add so it is documented as reviewed, not merely unmentioned.
+        - resource-type: Consent
+          fields: ""
+
+        # 4.2k. code = the procedure performed; performedDateTime/location KEPT.
+        - resource-type: Procedure
+          fields: code, outcome, complication
+
+        # 1.6k. The drug and amount given.
+        - resource-type: MedicationAdministration
+          fields: medicationCodeableConcept, medicationReference, dosage, supportingInformation
+
+        # 22. code = the allergen; reaction holds manifestation detail.
+        - resource-type: AllergyIntolerance
+          fields: code, reaction
+
+        # UAT only. Radiology findings — conclusion is free-text from the reporting radiologist.
+        - resource-type: ImagingStudy
+          fields: conclusion, conclusionCode, description, procedureCode, series, modality
+
+        # Not yet received. Pre-declared so a new feed cannot leak the vaccine given.
+        - resource-type: Immunization
+          fields: vaccineCode
+
     facility-filter:
       ids: []
     sources:

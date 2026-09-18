@@ -19,6 +19,16 @@ import static org.assertj.core.api.Assertions.*;
  */
 class CloudEventEnvelopeBuilderTest {
 
+    /**
+     * Production-equivalent redactor: these tests exercise envelope building and adaptor routing,
+     * both of which must behave identically with redaction switched on (as it is in production).
+     */
+    private static org.openphc.cce.emitter.redaction.ClinicalDataRedactor testRedactor() {
+        return new org.openphc.cce.emitter.redaction.ClinicalDataRedactor(
+                new org.openphc.cce.emitter.redaction.ClinicalDataRedactionProperties(true, null),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+    }
+
     private CloudEventEnvelopeBuilder builder;
     private ObjectMapper objectMapper;
 
@@ -44,7 +54,7 @@ class CloudEventEnvelopeBuilderTest {
     void setUp() {
         objectMapper = new ObjectMapper();
         EventIdGenerator idGenerator = new EventIdGenerator();
-        builder = new CloudEventEnvelopeBuilder(idGenerator, objectMapper);
+        builder = new CloudEventEnvelopeBuilder(idGenerator, objectMapper, testRedactor());
     }
 
     // --- Full envelope construction ---

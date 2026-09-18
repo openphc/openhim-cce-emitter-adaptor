@@ -19,6 +19,7 @@ flowchart LR
         SA[SourceAdaptor<br/>Service]
         PARSE[FHIR Resource<br/>Parser]
         NORM[CloudEvent<br/>Builder]
+        RED["Clinical Data<br/>Redactor"]
         FWD["Collector<br/>Forwarding<br/>@Retryable"]
         WRAP[OpenHIM<br/>ResponseWrapper]
     end
@@ -34,7 +35,8 @@ flowchart LR
     CTRL --> SA
     SA --> PARSE
     PARSE --> NORM
-    NORM --> FWD
+    NORM --> RED
+    RED -->|"clinical findings removed"| FWD
     FWD -->|POST /v1/events| COL
     COL --> KAFKA
 
@@ -51,6 +53,7 @@ sequenceDiagram
     participant EvtSvc as InboundEventService
     participant Svc as SourceAdaptorService
     participant CE as CloudEventEnvelopeBuilder
+    participant Red as ClinicalDataRedactor
     participant Fwd as CollectorForwardingService
     participant Col as CCE Collector
     participant Wrap as OpenHimResponseWrapper
@@ -73,7 +76,16 @@ sequenceDiagram
     Svc->>Svc: FacilityFilter.enforceFilter(facilityId, sourceKey)
     Note over Svc: 403 FACILITY_FILTER_REJECTED if denied
     Svc->>CE: build(fhirResource, patientUpid, type, metadata)
+    activate CE
+    CE->>Red: redact(data)
+    activate Red
+    Note over Red: Strip value[x], component, narrative,<br/>notes, contained, subject.display
+    Note over Red: Counter: cce.emitter.events.redacted.total
+    Red-->>CE: minimised data
+    deactivate Red
+    Note over CE: Data-minimisation boundary —<br/>clinical findings do not exist downstream
     CE-->>Svc: CloudEventDto
+    deactivate CE
     Svc-->>EvtSvc: List<CloudEventDto>
     deactivate Svc
 
@@ -272,6 +284,7 @@ flowchart TD
     SA_ABS["(internal FHIR→CloudEvent logic)"]
 
     CE[CloudEventEnvelopeBuilder]
+    RED[ClinicalDataRedactor]
     PIE[PatientIdExtractor]
     FRP[FhirResourceParser]
     IDG[EventIdGenerator]
@@ -294,6 +307,7 @@ flowchart TD
     SA_ABS --> PIE
 
     CE --> IDG
+    CE --> RED
 
     FWD --> RC
     REG_HB --> RC
@@ -305,6 +319,7 @@ flowchart TD
     style CTRL fill:#bbdefb
     style WRAP fill:#bbdefb
     style FWD fill:#c8e6c9
+    style RED fill:#ffe0b2
     style REG fill:#fff9c4
     style REG_HB fill:#e1bee7
     style HB fill:#e1bee7
