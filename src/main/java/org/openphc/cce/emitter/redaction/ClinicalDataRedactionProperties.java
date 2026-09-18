@@ -109,6 +109,11 @@ public record ClinicalDataRedactionProperties(
             // Ordering / prescribing detail and clinical justification
             "dosageInstruction", "reasonCode", "reasonReference",
             "orderDetail", "patientInstruction",
+            // Any remaining free-text a clinician can type into. Verified 2026-09-18 that no
+            // service reads these from inbound events (the two `description` hits in insights /
+            // intelligence are writes that BUILD output, not reads).
+            "comment", "description", "statusReason", "instruction", "summary",
+            "conclusion", "conclusionCode", "outcome",
             // The patient's name. Not clinical, but direct identifying data in the same payload,
             // and nothing downstream reads it — the patient is keyed on subject.reference /
             // patient.reference (the UPID), which is preserved. Both spellings are needed because
@@ -133,8 +138,15 @@ public record ClinicalDataRedactionProperties(
             // diagnosis = the encounter's diagnosis. type/class/serviceType drive protocol matching
             // and the referral KPI; hospitalization and location are the facility source, so they
             // are kept — hence dischargeDisposition ("Died in hospital") needs a nested path.
+            // extension is dropped WHOLESALE here, and only here. eBuzima packs diagnosis,
+            // prescriptions, vitals, obstetric detail, the patient's NAME, DOB and village-level
+            // address into custom extensions on transfer Encounters. Safe for Encounter only:
+            // the matcher and insights resolve an Encounter's facility from hospitalization.origin
+            // -> location[0].location and "deliberately never consult the source-facility
+            // extension for Encounter" (FacilityService). Every OTHER resource type has the
+            // source-facility extension as its ONLY facility signal, so extension must stay there.
             new ResourceRule("Encounter",
-                    List.of("diagnosis", "hospitalization.dischargeDisposition")),
+                    List.of("diagnosis", "hospitalization.dischargeDisposition", "extension")),
 
             // code = the test/procedure requested ("a1-Acid Glycoprotein").
             // category (laboratory vs other) and locationReference (facility) are kept.
@@ -158,7 +170,7 @@ public record ClinicalDataRedactionProperties(
             new ResourceRule("Consent", List.of()),
 
             // code = the procedure performed. performedDateTime and location are kept.
-            new ResourceRule("Procedure", List.of("code", "outcome", "complication")),
+            new ResourceRule("Procedure", List.of("code", "complication")),
 
             // dosage = how much was administered; supportingInformation may point at clinical data.
             new ResourceRule("MedicationAdministration",
@@ -172,8 +184,7 @@ public record ClinicalDataRedactionProperties(
             // no other resource type — conclusion is free-text narrative from the reporting
             // radiologist — so without this rule they would not be removed at all.
             new ResourceRule("ImagingStudy",
-                    List.of("conclusion", "conclusionCode", "description",
-                            "procedureCode", "series", "modality")),
+                    List.of("procedureCode", "series", "modality")),
 
             // Not currently received from eBuzima, but included so a new feed cannot leak the
             // vaccine given before anyone notices the resource type is unhandled.

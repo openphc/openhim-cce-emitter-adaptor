@@ -282,6 +282,27 @@ Prefer removing a **whole array** at the root over pathing into it: `component` 
 drops every sub-observation's `value[x]` in one step. Reach for a path only when part of the
 structure must survive.
 
+#### Check what your source system hides in `extension[]`
+
+Before signing off, dump the distinct extension URLs your source actually sends — do not assume
+extensions are metadata. eBuzima packs the diagnosis, prescriptions, a full vitals string, 19
+obstetric fields, HIV status, and the patient's **name, DOB and village-level address** into custom
+extensions on transfer Encounters. All of it flowed straight through the first redaction build,
+because redaction deliberately does not recurse into `extension[]` — that is where the
+`source-facility` attribution lives.
+
+```sql
+-- run this against your own inbound store before you trust the config
+SELECT DISTINCT x->>'url'
+FROM inbound_event_log, jsonb_array_elements(raw_payload->'data'->'extension') x;
+```
+
+Where a type does not need `extension` for attribution, drop the whole array for that type. Establish
+that per type from the code that resolves facility, not by assumption: for Encounter the facility
+comes from `hospitalization.origin` → `location[0].location`, so the extension is expendable; for
+Observation, Condition and MedicationRequest the `source-facility` extension is the **only** signal
+they carry, and dropping it would break attribution platform-wide.
+
 #### Three traps
 
 1. **Do not write a recursive scrub.** Removing `valueString` everywhere also removes it from

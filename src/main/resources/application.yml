@@ -73,6 +73,7 @@ cce:
             valueRatio, valueSampledData, valueTime, valueDateTime, valuePeriod, valueAttachment, note, text,
             interpretation, dataAbsentReason, bodySite, method, specimen, referenceRange, contained, severity,
             stage, evidence, dosageInstruction, reasonCode, reasonReference, orderDetail, patientInstruction,
+            comment, description, statusReason, instruction, summary, conclusion, conclusionCode, outcome,
             subject.display, patient.display
 
         # ── Additions per resource type ─────────────────────────────────────────────────
@@ -86,8 +87,17 @@ cce:
         # 48k. type/class/serviceType KEPT — drive protocol matching + the referral KPI.
         # hospitalization KEPT for facility attribution (hospitalization.origin), so its clinical
         # child needs a path rather than a root field.
+        #
+        # `extension` is dropped WHOLESALE here, and ONLY here. eBuzima packs the diagnosis,
+        # prescriptions, vitals, 19 obstetric fields, ANC history AND the patient's name, DOB and
+        # village-level address into custom extensions on transfer Encounters (see
+        # docs/redaction-samples/LEAK-README.md). Safe for Encounter because the matcher and
+        # insights resolve an Encounter's facility from hospitalization.origin -> location[0].location
+        # and never consult the source-facility extension for this type.
+        # ⚠️ Do NOT copy this to other resource types: for Observation/Condition/MedicationRequest
+        # etc. the source-facility extension is the ONLY facility signal they carry.
         - resource-type: Encounter
-          fields: diagnosis, hospitalization.dischargeDisposition
+          fields: diagnosis, hospitalization.dischargeDisposition, extension
 
         # 33k. code = the test ordered; category KEPT (identifies a laboratory order).
         - resource-type: ServiceRequest
@@ -112,7 +122,7 @@ cce:
 
         # 4.2k. code = the procedure performed; performedDateTime/location KEPT.
         - resource-type: Procedure
-          fields: code, outcome, complication
+          fields: code, complication
 
         # 1.6k. The drug and amount given.
         - resource-type: MedicationAdministration
@@ -124,7 +134,7 @@ cce:
 
         # UAT only. Radiology findings — conclusion is free-text from the reporting radiologist.
         - resource-type: ImagingStudy
-          fields: conclusion, conclusionCode, description, procedureCode, series, modality
+          fields: procedureCode, series, modality
 
         # Not yet received. Pre-declared so a new feed cannot leak the vaccine given.
         - resource-type: Immunization

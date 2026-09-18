@@ -190,6 +190,79 @@ class RedactionConfigBindingTest {
     }
 
     @Test
+    @DisplayName("Encounter drops the whole extension array — eBuzima hides clinical data + PII there")
+    void encounterExtensionsAreDropped() throws IOException {
+        ClinicalDataRedactor redactor = new ClinicalDataRedactor(properties, new SimpleMeterRegistry());
+
+        // Shape taken verbatim from a real UAT transfer Encounter
+        // (docs/redaction-samples/LEAK-transfer-encounter.json).
+        JsonNode out = redactor.redact(MAPPER.readTree("""
+                {
+                  "resourceType": "Encounter",
+                  "status": "finished",
+                  "type": [{"coding": [{"display": "TRANSFER_ENCOUNTER"}]}],
+                  "subject": {"reference": "Patient/260905-0000-2753"},
+                  "hospitalization": {"origin": {"reference": "Location/abc", "display": "Muhima DH"}},
+                  "location": [{"location": {"reference": "Location/xyz", "display": "Muhima DH"}}],
+                  "extension": [
+                    {"url": "http://example.org/fhir/StructureDefinition/source-facility",
+                     "valueString": "1651"},
+                    {"url": "http://example.org/fhir/StructureDefinition/clinical-presentation",
+                     "extension": [{"url": "presentation",
+                                    "valueString": "Plasmodium malariae malaria without complication"}]},
+                    {"url": "http://example.org/fhir/StructureDefinition/transfer-flags",
+                     "extension": [{"url": "prescriptions",
+                                    "valueString": "Paracetamol, CAPTOPRIL 25MG"}]},
+                    {"url": "http://example.org/fhir/StructureDefinition/patient-demographics",
+                     "extension": [{"url": "name", "valueString": "Test Kyle"},
+                                   {"url": "dob",  "valueString": "2001-01-01"}]},
+                    {"url": "http://example.org/fhir/StructureDefinition/maternity-info",
+                     "extension": [{"url": "fetal-presentation", "valueString": "Breech"}]}
+                  ]
+                }
+                """));
+
+        assertThat(out.has("extension")).as("the whole extension array").isFalse();
+        assertThat(out.toString()).doesNotContain(
+                "Plasmodium", "Paracetamol", "CAPTOPRIL", "Test Kyle", "2001-01-01", "Breech");
+
+        // Encounter facility attribution must survive — it comes from here, never from the
+        // source-facility extension (FacilityService in the matcher).
+        assertThat(out.path("hospitalization").path("origin").path("reference").asText())
+                .isEqualTo("Location/abc");
+        assertThat(out.path("location").get(0).path("location").path("reference").asText())
+                .isEqualTo("Location/xyz");
+        assertThat(out.path("type").get(0).path("coding").get(0).path("display").asText())
+                .isEqualTo("TRANSFER_ENCOUNTER");
+    }
+
+    @Test
+    @DisplayName("every OTHER resource type keeps extension — it is their only facility signal")
+    void nonEncounterTypesKeepTheSourceFacilityExtension() throws IOException {
+        ClinicalDataRedactor redactor = new ClinicalDataRedactor(properties, new SimpleMeterRegistry());
+
+        for (String type : List.of("Observation", "Condition", "MedicationRequest", "ServiceRequest",
+                                   "Procedure", "Consent", "MedicationDispense")) {
+            JsonNode out = redactor.redact(MAPPER.readTree("""
+                    {
+                      "resourceType": "%s",
+                      "extension": [
+                        {"url": "http://example.org/fhir/StructureDefinition/source-facility",
+                         "valueString": "1651"},
+                        {"url": "http://example.org/fhir/StructureDefinition/source-system",
+                         "valueString": "eBuzima"}
+                      ]
+                    }
+                    """.formatted(type)));
+
+            assertThat(out.has("extension"))
+                    .as("%s must keep extension — source-facility is its only facility signal", type)
+                    .isTrue();
+            assertThat(out.path("extension").get(0).path("valueString").asText()).isEqualTo("1651");
+        }
+    }
+
+    @Test
     @DisplayName("the shipped YAML redacts a real Condition end to end")
     void shippedConfigRedactsARealCondition() throws IOException {
         ClinicalDataRedactor redactor = new ClinicalDataRedactor(properties, new SimpleMeterRegistry());

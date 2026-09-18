@@ -196,6 +196,8 @@ valueRange, valueRatio, valueSampledData, valueTime, valueDateTime, valuePeriod,
 valueAttachment, note, text, interpretation, dataAbsentReason, bodySite, method,
 specimen, referenceRange, contained, severity, stage, evidence, dosageInstruction,
 reasonCode, reasonReference, orderDetail, patientInstruction,
+comment, description, statusReason, instruction, summary,
+conclusion, conclusionCode, outcome,
 subject.display, patient.display
 ```
 
@@ -206,13 +208,13 @@ Plus, per type — each listing **only its additions** to the above. Every resou
 | `resource-type` | PROD volume | Entries (added to the `"*"` list) | Rationale |
 |-----------------|-------------|---------------------------|-----------|
 | `Observation` | 141,036 | `component` | Sub-observations, each with their own `value[x]`. **`code` kept** — it is the LOINC trigger key. |
-| `Encounter` | 47,708 | `diagnosis`, `hospitalization.dischargeDisposition` | `type` kept — carries `VISIT_ENCOUNTER` / `CONSULTATION_ENCOUNTER` / `TRANSFER_ENCOUNTER`, which drive protocol matching and the referral KPI. `class`, `serviceType`, `period`, `location`, `hospitalization`, `participant` kept. `reasonCode` removed via the common set. |
+| `Encounter` | 47,708 | `diagnosis`, `hospitalization.dischargeDisposition`, **`extension`** | `type` kept — carries `VISIT_ENCOUNTER` / `CONSULTATION_ENCOUNTER` / `TRANSFER_ENCOUNTER`, which drive protocol matching and the referral KPI. `class`, `serviceType`, `period`, `location`, `hospitalization`, `participant` kept. `reasonCode` removed via the common set. |
 | `ServiceRequest` | 32,780 | `code` | The test requested. `category` kept (distinguishes a laboratory order), as are `intent`, `occurrenceDateTime` and `locationReference`. |
 | `MedicationRequest` | 30,166 | `medicationCodeableConcept`, `medicationReference`, `dispenseRequest` | The drug, and the quantity/refills. `intent` kept — protocol conditions read it — as are `authoredOn`, `requester`, `status`. |
 | `Condition` | 24,972 | `code` | The diagnosis itself. `clinicalStatus` / `verificationStatus` kept — the Rwanda protocol's diagnosis step triggers on them. |
 | `MedicationDispense` | 20,472 | `medicationCodeableConcept`, `medicationReference`, `quantity` | The drug and how much. `whenHandedOver` kept — a clinical-time field the SLA engine reads. |
 | `Consent` | 15,761 | — (nothing to add) | Carries no clinical finding; `category`, `scope`, `status` and `dateTime` are consent metadata and are what the Consent step matches on. Listed explicitly so it is documented as reviewed. |
-| `Procedure` | 4,174 | `code`, `outcome`, `complication` | The procedure performed and its result. `performedDateTime`, `location`, `performer` kept. |
+| `Procedure` | 4,174 | `code`, `complication` | The procedure performed and its result. `performedDateTime`, `location`, `performer` kept. |
 | `MedicationAdministration` | 1,614 | `medicationCodeableConcept`, `medicationReference`, `dosage`, `supportingInformation` | The drug, the amount given, and references that may point at clinical data. |
 | `AllergyIntolerance` | 22 | `code`, `reaction` | The allergen and reaction detail. `clinicalStatus` / `verificationStatus` / `onsetDateTime` / `recordedDate` kept. |
 | `Immunization` | 0 | `vaccineCode` | Not currently received. Pre-declared so a new feed cannot leak the vaccine given before anyone notices the type is unhandled. |
@@ -241,6 +243,30 @@ The `[]` is **required** wherever the data is an array. Without it the path walk
 | `Encounter` | `hospitalization.dischargeDisposition` | The discharge outcome ("Died in hospital", "Transferred to ICU") is clinical, but its parent `hospitalization` is kept because `hospitalization.origin` is a facility source. |
 
 A path whose structure is simply **absent** from a payload is normal — most encounters have no `hospitalization` — and is not reported. Only a type conflict, which means the configuration can never work, is.
+
+#### `extension` — dropped on Encounter only
+
+eBuzima packs a great deal into custom FHIR extensions on transfer Encounters. Captured from UAT on 2026-09-18, **after** the first redaction build was live:
+
+| Extension | Carries |
+|-----------|---------|
+| `clinical-presentation` | the diagnosis — *"Plasmodium malariae malaria without complication"* |
+| `transfer-flags` | `prescriptions` (*"Paracetamol, CAPTOPRIL 25MG"*), `consultation-motif` |
+| `vital-signs` / `extended-vitals` | *"T: 36.0, SpO2: 100.0%, RR: 18.0, Pulse: 80.0, BP: 100.0/78.0…"* |
+| `maternity-info` | 19 obstetric fields — fetal heart rate, dilation, blood loss, oxytocin, magnesium sulphate… |
+| `anc-info` | LMP, EDD, haemoglobin, **HIV status**, blood group |
+| `patient-demographics` | **name, dob, gender, phone, serial-number** |
+| `patient-address` | province → district → sector → cell → **village** |
+| `clinical-scores`, `lab-results`, `additional-notes` | BMI, lab text, free-text notes |
+
+Redaction never recurses into `extension[]` — that is where `source-facility` lives — so none of this was being removed. `Encounter` therefore drops the **whole `extension` array**.
+
+> ⚠️ **This applies to `Encounter` and nothing else.** For every other resource type the `source-facility` extension is the *only* facility signal the payload carries; dropping `extension` there would break facility attribution platform-wide.
+
+Encounter is safe because its facility is resolved from `hospitalization.origin` → `location[0].location`, both of which are kept. The matcher states this explicitly: *"The source-facility extension is deliberately never consulted for Encounter (superseded by reading hospitalization.origin directly)"* (`FacilityService`). Verified the same in `cce-insights-service` `PatientTimelineService`, and confirmed no service reads any of the transfer/referral extension URLs.
+
+Guarded by `RedactionConfigBindingTest.encounterExtensionsAreDropped` and
+`nonEncounterTypesKeepTheSourceFacilityExtension`.
 
 #### What is preserved, and why
 
