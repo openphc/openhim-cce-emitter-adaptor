@@ -54,8 +54,10 @@ jobs:
     - name: Build project
       run: ./gradlew build
 
+    # Built from the repository Dockerfile rather than bootBuildImage: the image build no longer
+    # depends on Spring Boot's own Docker client, and the image keeps a shell for debugging.
     - name: Build container image
-      run: ./gradlew bootBuildImage --imageName=${IMAGE_URI}:${{ steps.version.outputs.version_tag }}
+      run: docker build -t ${IMAGE_URI}:${{ steps.version.outputs.version_tag }} .
 
     - name: Tag image as latest
       run: docker tag ${IMAGE_URI}:${{ steps.version.outputs.version_tag }} ${IMAGE_URI}:latest
