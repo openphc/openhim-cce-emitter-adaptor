@@ -163,6 +163,7 @@ docker compose up -d
 | `/inbound` | POST | Inbound FHIR resource (adaptor auto-selected via headers) |
 | `/actuator/health` | GET | Health status |
 | `/actuator/prometheus` | GET | Prometheus metrics |
+||
 
 ## License
 
