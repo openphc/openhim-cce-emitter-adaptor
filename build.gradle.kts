@@ -2,6 +2,8 @@ plugins {
     java
     id("org.springframework.boot") version "3.4.1"
     id("io.spring.dependency-management") version "1.1.7"
+    jacoco
+    id("org.sonarqube") version "6.3.1.5724"
 }
 
 group = "org.openphc.cce"
@@ -53,4 +55,27 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)   // the format Sonar ingests
+        html.required.set(true)  // for local browsing
+    }
+}
+
+sonar {
+    properties {
+        property("sonar.organization", "openphc")
+        property("sonar.projectKey", "openphc_openhim-cce-emitter-adaptor")
+        property(
+            "sonar.coverage.jacoco.xmlReportPaths",
+            "${layout.buildDirectory.get()}/reports/jacoco/test/jacocoTestReport.xml",
+        )
+    }
+}
+
+tasks.named("sonar") {
+    dependsOn(tasks.jacocoTestReport)
 }
