@@ -60,6 +60,8 @@ cce:
         client-id: ${SPICE_CLIENT_ID}
       openmrs:
         client-id: ${OPENMRS_CLIENT_ID}
+      spice-facility:
+        client-id: ${SPICE_FACILITY_CLIENT_ID}
 
 management:
   endpoints:
