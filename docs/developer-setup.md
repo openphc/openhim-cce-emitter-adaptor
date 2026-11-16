@@ -184,7 +184,7 @@ cce:
   collector:
     url: http://localhost:5001
     events-path: /v1/events
-    timeout: 5000
+    timeout: 15000
     retry:
       max-attempts: 3
       backoff-ms: 1000
@@ -302,7 +302,7 @@ cce:
   collector:
     url: ${CCE_COLLECTOR_URL}
     events-path: ${CCE_COLLECTOR_EVENTS_PATH:/v1/events}
-    timeout: ${CCE_COLLECTOR_TIMEOUT:5000}
+    timeout: ${CCE_COLLECTOR_TIMEOUT:15000}
     retry:
       max-attempts: ${CCE_COLLECTOR_RETRY_MAX_ATTEMPTS:3}
       backoff-ms: ${CCE_COLLECTOR_RETRY_BACKOFF_MS:1000}

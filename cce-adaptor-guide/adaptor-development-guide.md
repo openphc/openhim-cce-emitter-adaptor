@@ -542,7 +542,7 @@ cce:
   collector:
     url: https://gateway.example.org      # CCE Gateway base URL (NOT the Collector directly)
     events-path: /v1/events
-    timeout: 5000                          # ms
+    timeout: 15000                         # ms, longer than the Collector's Kafka publish time
     retry:
       max-attempts: 3
       backoff-ms: 1000                     # exponential backoff base

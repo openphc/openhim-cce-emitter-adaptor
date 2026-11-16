@@ -24,7 +24,7 @@ cce:
   collector:
     url: http://localhost:5001
     events-path: /v1/events
-    timeout: 5000
+    timeout: 15000
     retry:
       max-attempts: 3
       backoff-ms: 1000

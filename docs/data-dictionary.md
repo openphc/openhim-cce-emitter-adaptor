@@ -118,7 +118,7 @@ Prefix: `cce.collector`
 |----------|------|---------|-------------|
 | `cce.collector.url` | String | `http://localhost:5001` | Collector base URL |
 | `cce.collector.events-path` | String | `/v1/events` | Events endpoint path |
-| `cce.collector.timeout` | int | `5000` | HTTP connect + read timeout in ms |
+| `cce.collector.timeout` | int | `15000` | HTTP connect + read timeout in ms. Must be longer than the Collector's Kafka publish time (3 s + 10 s) |
 | `cce.collector.retry.max-attempts` | int | `3` | Maximum retry attempts for 5xx/timeout |
 | `cce.collector.retry.backoff-ms` | int | `1000` | Initial backoff delay in ms (doubles per retry) |
 | `cce.collector.auth.token` | String | — | Static Bearer token (fallback when Keycloak is not configured) |
