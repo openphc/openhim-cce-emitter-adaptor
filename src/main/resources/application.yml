@@ -35,7 +35,9 @@ cce:
   collector:
     url: http://localhost:5001
     events-path: /v1/events
-    timeout: 5000
+    # Must be longer than the Collector's Kafka publish time (max.block.ms 3 s + publish timeout 10 s).
+    # If it is shorter, this call gives up and retries while the Collector is still publishing.
+    timeout: 15000
     retry:
       max-attempts: 3
       backoff-ms: 1000
