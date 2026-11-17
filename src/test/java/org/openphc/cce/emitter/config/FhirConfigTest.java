@@ -13,7 +13,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that the {@link FhirConfig} bean is correctly configured as a singleton
  * and returns an R4 {@link FhirContext}.
  */
-@SpringBootTest
+// Beckn is on by default on demo-beckn and needs its ids; this test is about the base context.
+@SpringBootTest(properties = "beckn.enabled=false")
 class FhirConfigTest {
 
     @Autowired

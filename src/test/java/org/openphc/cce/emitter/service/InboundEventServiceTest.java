@@ -12,6 +12,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.openphc.cce.emitter.adaptor.SourceAdaptorService;
 import org.openphc.cce.emitter.config.CollectorProperties;
+import org.openphc.cce.emitter.config.EmitterProperties;
 import org.openphc.cce.emitter.config.MediatorProperties;
 import org.openphc.cce.emitter.model.CloudEventDto;
 import org.openphc.cce.emitter.model.CollectorResponse;
@@ -21,6 +22,7 @@ import org.openphc.cce.emitter.openhim.model.OpenHimResponse;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -58,9 +60,13 @@ class InboundEventServiceTest {
 
         OpenHimResponseWrapper responseWrapper = new OpenHimResponseWrapper(mediatorProperties, objectMapper);
 
+        EventForwardingRouter router = new EventForwardingRouter(
+                new EmitterProperties(Map.of(), null), collectorForwardingService,
+                Optional.empty(), collectorProperties, Optional.empty());
+
         service = new InboundEventService(
-                sourceAdaptorService, collectorForwardingService,
-                responseWrapper, collectorProperties, objectMapper,
+                sourceAdaptorService, router,
+                responseWrapper, objectMapper,
                 new SimpleMeterRegistry());
     }
 

@@ -7,7 +7,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 
 import org.openphc.cce.emitter.adaptor.SourceAdaptorService;
-import org.openphc.cce.emitter.config.CollectorProperties;
+import org.openphc.cce.emitter.config.EmitterProperties.Output;
 import org.openphc.cce.emitter.exception.FacilityFilterRejectedException;
 import org.openphc.cce.emitter.model.CloudEventDto;
 import org.openphc.cce.emitter.model.CollectorResponse;
@@ -31,7 +31,8 @@ import java.util.Map;
 
 /**
  * Orchestrates the full inbound event processing pipeline:
- * source resolution, FHIR→CloudEvent transformation, Collector forwarding,
+ * source resolution, FHIR→CloudEvent transformation, forwarding to the source's
+ * output (CCE Collector or CCE over Beckn, via {@link EventForwardingRouter}),
  * and OpenHIM response envelope construction.
  *
  * <p>Keeps the controller layer thin — the controller handles only HTTP
@@ -44,23 +45,20 @@ public class InboundEventService {
     private static final Logger log = LoggerFactory.getLogger(InboundEventService.class);
 
     private final SourceAdaptorService sourceAdaptorService;
-    private final CollectorForwardingService collectorForwardingService;
+    private final EventForwardingRouter forwardingRouter;
     private final OpenHimResponseWrapper responseWrapper;
-    private final CollectorProperties collectorProperties;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
 
     public InboundEventService(
             SourceAdaptorService sourceAdaptorService,
-            CollectorForwardingService collectorForwardingService,
+            EventForwardingRouter forwardingRouter,
             OpenHimResponseWrapper responseWrapper,
-            CollectorProperties collectorProperties,
             ObjectMapper objectMapper,
             MeterRegistry meterRegistry) {
         this.sourceAdaptorService = sourceAdaptorService;
-        this.collectorForwardingService = collectorForwardingService;
+        this.forwardingRouter = forwardingRouter;
         this.responseWrapper = responseWrapper;
-        this.collectorProperties = collectorProperties;
         this.objectMapper = objectMapper;
         this.meterRegistry = meterRegistry;
     }
@@ -102,7 +100,7 @@ public class InboundEventService {
             return responseWrapper.wrap(responseBody, HttpStatus.OK, List.of());
         }
 
-        // 3. Forward each CloudEvent to the Collector and collect results
+        // 3. Forward each CloudEvent to its source's output and collect results
         List<TransformationResult> results = new ArrayList<>();
         List<OpenHimResponse.Orchestration> orchestrations = new ArrayList<>();
 
@@ -110,10 +108,11 @@ public class InboundEventService {
             populateMdc(event);
             try {
                 String requestTimestamp = nowUtc();
-                CollectorResponse collectorResponse = collectorForwardingService.forward(event);
+                Output output = forwardingRouter.outputFor(event);
+                CollectorResponse collectorResponse = forwardingRouter.forward(event);
                 TransformationResult result = TransformationResult.from(event, collectorResponse);
                 results.add(result);
-                orchestrations.add(buildOrchestration(event, collectorResponse, requestTimestamp));
+                orchestrations.add(buildOrchestration(event, collectorResponse, requestTimestamp, output));
 
                 trackForwardingMetrics(event, result.collectorStatus());
             } finally {
@@ -160,23 +159,23 @@ public class InboundEventService {
     // ==================== Helper methods ====================
 
     private OpenHimResponse.Orchestration buildOrchestration(
-            CloudEventDto event, CollectorResponse collectorResponse, String requestTimestamp) {
+            CloudEventDto event, CollectorResponse collectorResponse, String requestTimestamp, Output output) {
 
         String responseTimestamp = nowUtc();
         String collectorStatus = collectorResponse.data() != null
                 ? collectorResponse.data().status() : "accepted";
 
         return OpenHimResponse.Orchestration.builder()
-                .name("Forward to CCE Collector")
+                .name(forwardingRouter.orchestrationName(output))
                 .request(OpenHimResponse.Orchestration.Request.builder()
                         .method("POST")
-                        .path(collectorProperties.eventsPath())
+                        .path(forwardingRouter.orchestrationPath(output))
                         .body(toJson(event))
                         .timestamp(requestTimestamp)
                         .headers(Map.of("Content-Type", "application/json"))
                         .build())
                 .response(OpenHimResponse.Orchestration.OrchestrationResponse.builder()
-                        .status(collectorStatus.equals("duplicate") ? 200 : 202)
+                        .status(output == Output.BECKN || collectorStatus.equals("duplicate") ? 200 : 202)
                         .body(toJson(collectorResponse))
                         .timestamp(responseTimestamp)
                         .build())

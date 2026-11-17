@@ -2,7 +2,7 @@ name: Java CI and GHCR Push
 
 on:
   push:
-    branches: [ "release-1.0.0" ]
+    branches: [ "demo-beckn" ]
   workflow_dispatch:
 
 permissions:
@@ -11,8 +11,10 @@ permissions:
 
 env:
   IMAGE_URI: ghcr.io/${{ github.repository }}
-  # Incremental release tags: v1, v2, v3, ... (one new tag per successful build)
-  VERSION_TAG_PREFIX: v
+  # Incremental release tags: demo-beckn-v1, demo-beckn-v2, ... (one new tag per successful build)
+  VERSION_TAG_PREFIX: demo-beckn-v
+  # Moving tag for the newest demo-beckn build. Kept apart from :latest, which other branches publish
+  LATEST_TAG: demo-beckn-latest
 
 jobs:
   build:
@@ -59,8 +61,8 @@ jobs:
     - name: Build container image
       run: docker build -t ${IMAGE_URI}:${{ steps.version.outputs.version_tag }} .
 
-    - name: Tag image as latest
-      run: docker tag ${IMAGE_URI}:${{ steps.version.outputs.version_tag }} ${IMAGE_URI}:latest
+    - name: Tag image as demo-beckn-latest
+      run: docker tag ${IMAGE_URI}:${{ steps.version.outputs.version_tag }} ${IMAGE_URI}:${LATEST_TAG}
 
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
@@ -69,26 +71,8 @@ jobs:
         username: ${{ github.repository_owner }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Push version and latest to GHCR
+    - name: Push version and demo-beckn-latest to GHCR
       run: |
         VERSION_TAG="${{ steps.version.outputs.version_tag }}"
         docker push ${IMAGE_URI}:${VERSION_TAG}
-        docker push ${IMAGE_URI}:latest
-
-  trigger-deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/release-1.0.0' && success()
-    env:
-      GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-    steps:
-      - name: Trigger deploy-scripts workflow_dispatch
-        run: |
-          gh api --method POST \
-            /repos/openphc/deploy-scripts/actions/workflows/deploy.yml/dispatches \
-            --input - <<'JSON'
-          {
-            "ref": "main",
-            "inputs": { "target_env": "dev" }
-          }
-          JSON
+        docker push ${IMAGE_URI}:${LATEST_TAG}

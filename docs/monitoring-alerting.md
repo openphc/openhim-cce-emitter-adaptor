@@ -309,3 +309,109 @@ Docker marks the container as `unhealthy` after 3 consecutive failures. Containe
 | Collector latency p95 | >2 seconds for 5 minutes | >5 seconds for 5 minutes |
 | No events received | >30 minutes (business hours) | >60 minutes (business hours) |
 | Heap usage | >85% for 10 minutes | >95% for 5 minutes |
+
+## 8. Beckn Metrics and Alerts (Proposal)
+
+> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). The metrics and alerts in §1–§7 are unchanged. With `beckn.enabled=false` (default) the metrics below are not registered.
+
+On the Beckn output, the existing metrics keep their meaning: CCE's `ACK` counts as `cce_emitter_events_forwarded_total`, a 400 `NACK` (`EVENT_REJECTED`, `BAD_REQUEST`, `NOT_SUPPORTED`) as `cce_emitter_events_rejected_total`, and an answer that may pass (500 `COLLECTOR_UNAVAILABLE` or `INTERNAL_ERROR`, 408, 429, timeout) as `cce_emitter_collector_retries_total`. A `DUPLICATE` from CCE's `on_update` counts as `cce_emitter_events_duplicate_total`. CCE sends `on_update` once and it may be lost, so this count can be low; it is a hint, not a total. So the alerts in §3 also cover the Beckn output. Note that `cce_emitter_events_received_total` tags all Beckn traffic with the unwrap endpoint's OpenHIM client id.
+
+### 8.1 New Metrics
+
+| Metric | Type | Tags | Description |
+|--------|------|------|-------------|
+| `cce_emitter_beckn_received_total` | Counter | `endpoint` (`bpp`, `bap`), `action` | Beckn messages received |
+| `cce_emitter_beckn_answered_total` | Counter | `endpoint`, `action`, `result` (`ack`, `nack`, `error`), `code` (`BAD_REQUEST`, `NOT_SUPPORTED`, `EVENT_REJECTED`, `UNAVAILABLE`, `HIE_ERROR`; `none` on `ack`) | Beckn messages answered |
+| `cce_emitter_beckn_channel_ignored_total` | Counter | `subscriber`, `status` (`ignored`, `skipped`) | OpenHIM channel answered 200 without forwarding. Each one becomes a `Nack` to the HMIS |
+| `cce_emitter_beckn_channel_latency_seconds` | Timer | — | Unwrap endpoint → OpenHIM channel → answer. Includes the whole inner route |
+| `cce_emitter_beckn_onupdate_sent_total` | Counter | `subscriber`, `result` (`ok`, `failed`) | `on_update` sent to an HMIS |
+| `cce_emitter_beckn_cce_update_sent_total` | Counter | `source`, `result` (`ack`, `nack`, `error`), `code` (CCE's `NACK` code) | `update` sent to CCE |
+| `cce_emitter_beckn_cce_onupdate_received_total` | Counter | `status` (`ACCEPTED`, `DUPLICATE`) | CCE's `on_update` |
+| `cce_emitter_beckn_onix_latency_seconds` | Timer | `container` (`bap`, `bpp`), `action` | Round trip to `onix-bap` / `onix-bpp` |
+
+### 8.2 Alert Rules
+
+```yaml
+  - name: cce-emitter-adaptor-beckn
+    rules:
+
+      # Events from an HMIS that reached no output — "ignored" or "skipped" from the channel
+      - alert: CceEmitterBecknChannelIgnored
+        expr: increase(cce_emitter_beckn_channel_ignored_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: cce-emitter-adaptor
+        annotations:
+          summary: "Beckn events answered 'ignored' or 'skipped' by the OpenHIM channel"
+          description: "The HMIS got a Nack. With status=ignored the subscriber's source-system matches no source, or the unwrap client id matches a source's client-id."
+          runbook: "Check beckn.subscribers[].source-system against cce.emitter.sources, and the facility filter for status=skipped."
+
+      # CCE unreachable over Beckn
+      - alert: CceEmitterBecknCceErrors
+        expr: rate(cce_emitter_beckn_cce_update_sent_total{result="error"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: cce-emitter-adaptor
+        annotations:
+          summary: "update to CCE failing (500, 408, 429 or timeout)"
+          description: "onix-bap, cce-onix, cce-beckn-service or the CCE collector is down or slow (CCE code COLLECTOR_UNAVAILABLE or INTERNAL_ERROR). HMIS systems get Nack 500 UNAVAILABLE and should resend with a growing wait."
+          runbook: "Check openhim-onix (bap) logs, then the CCE side. Check the timeout budget: CCE's Ack can take 17 s, and the onix responseHeaderTimeout default of 5 s is too short."
+
+      # Many Nacks to HMIS systems
+      - alert: CceEmitterBecknHighNackRate
+        expr: sum(rate(cce_emitter_beckn_answered_total{endpoint="bpp",result="nack"}[5m])) / sum(rate(cce_emitter_beckn_received_total{endpoint="bpp"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: cce-emitter-adaptor
+        annotations:
+          summary: "More than 5% of Beckn updates answered Nack"
+          description: "Group by code: BAD_REQUEST (unknown subscriber or contract, not exactly one entry, or CCE found a broken rule), EVENT_REJECTED (ignored, skipped, a pipeline 4xx, or CCE refused the event)."
+
+      # onix close to its timeout
+      - alert: CceEmitterBecknOnixSlow
+        expr: histogram_quantile(0.95, rate(cce_emitter_beckn_onix_latency_seconds_bucket{container="bap"}[5m])) > 0.8 * 25
+        for: 5m
+        labels:
+          severity: warning
+          service: cce-emitter-adaptor
+        annotations:
+          summary: "onix-bap p95 close to the Beckn timeout"
+          description: "Outer hops may give up first and the HMIS will resend."
+
+      # on_update to HMIS failing
+      - alert: CceEmitterBecknOnUpdateFailing
+        expr: rate(cce_emitter_beckn_onupdate_sent_total{result="failed"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: info
+          service: cce-emitter-adaptor
+        annotations:
+          summary: "on_update to an HMIS failing"
+          description: "The HMIS already got its Ack; only the callback is lost. Check openhim-onix (bpp)."
+```
+
+### 8.3 Dashboard and Logs
+
+| Panel | Query |
+|-------|-------|
+| Beckn answers by result | `sum by (result) (rate(cce_emitter_beckn_answered_total{endpoint="bpp"}[5m]))` |
+| Ignored / skipped by subscriber | `sum by (subscriber, status) (increase(cce_emitter_beckn_channel_ignored_total[1h]))` |
+| `update` to CCE by result | `sum by (result, code) (rate(cce_emitter_beckn_cce_update_sent_total[5m]))` |
+| onix latency p95 | `histogram_quantile(0.95, rate(cce_emitter_beckn_onix_latency_seconds_bucket[5m]))` |
+| HTTP on Beckn endpoints | `rate(http_server_requests_seconds_count{uri=~"/beckn/.*"}[5m])` |
+
+| Log query | Filter |
+|-----------|--------|
+| Trace one Beckn message | `becknMessageId: "<context.messageId>"`. CCE's `on_update` has the `messageId` of this adaptor's `update`. To ask the CCE team about a refusal, give them that `messageId` and the `transactionId` |
+| All messages of one HMIS | `subscriber: "bap.openmrs.example.org"` |
+| Nacks | `logger: *"Beckn"* AND message: *"Nack"*` |
+
+| Metric | Warning | Critical |
+|--------|---------|----------|
+| Channel "ignored" / "skipped" | Any in 10 minutes | — |
+| `update` to CCE errors | — | Any sustained rate for 2 minutes |
+| Nack rate on `/beckn/bpp-webhook` | >5% for 5 minutes | >20% for 5 minutes |
+| onix-bap latency p95 | >80% of `beckn.onix.timeout` (25 s). CCE's `Ack` alone can take 17 s | — |
