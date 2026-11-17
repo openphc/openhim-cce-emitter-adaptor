@@ -5,7 +5,7 @@
         <!-- Default/dev: human-readable console output with MDC fields -->
         <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
             <encoder>
-                <pattern>%d{ISO8601} [%thread] %-5level %logger{36} [%X{correlationId:-}] [%X{source:-}] [%X{eventType:-}] [%X{subject:-}] - %msg%n</pattern>
+                <pattern>%d{ISO8601} [%thread] %-5level %logger{36} [%X{correlationId:-}] [%X{source:-}] [%X{eventType:-}] [%X{subject:-}]%replace( [beckn %X{becknAction:-} %X{becknMessageId:-} %X{subscriber:-}]){' \[beckn +\]', ''} - %msg%n</pattern>
             </encoder>
         </appender>
 
@@ -20,7 +20,7 @@
         <!-- Production: structured JSON output via pattern (no extra dependencies) -->
         <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
             <encoder>
-                <pattern>{"timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSS'Z',UTC}","level":"%level","logger":"%logger","thread":"%thread","correlationId":"%X{correlationId:-}","source":"%X{source:-}","eventType":"%X{eventType:-}","subject":"%X{subject:-}","message":"%replace(%msg){'\"','\\\"'}"}%n</pattern>
+                <pattern>{"timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSS'Z',UTC}","level":"%level","logger":"%logger","thread":"%thread","correlationId":"%X{correlationId:-}","source":"%X{source:-}","eventType":"%X{eventType:-}","subject":"%X{subject:-}","becknMessageId":"%X{becknMessageId:-}","becknTransactionId":"%X{becknTransactionId:-}","becknAction":"%X{becknAction:-}","subscriber":"%X{subscriber:-}","message":"%replace(%msg){'\"','\\\"'}"}%n</pattern>
             </encoder>
         </appender>
 

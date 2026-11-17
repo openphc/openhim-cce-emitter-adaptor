@@ -8,6 +8,10 @@ Clinical findings are **removed before the event is forwarded**: CCE records *th
 
 **No third-party mediator library is used** — the OpenHIM mediator contract (registration, heartbeat, response envelope) is implemented via custom Spring components.
 
+### Beckn (proposal)
+
+On branch `demo-beckn` the adaptor can also act as the HIE's Beckn bridge to CCE: a new endpoint takes events from HMIS systems (OpenMRS, Spice) over a Beckn network and posts the FHIR resource into an OpenHIM channel; the existing pipeline builds the CloudEvent; and a new output, chosen per source, sends it on to CCE over Beckn instead of to the CCE Collector. Built, and on by default on this branch (`OPENHIM_EMITTER_BECKN_ENABLED=false` turns it off; sources without an explicit `output` then use the collector); see the implementation notes in the design (§16). Towards CCE the adaptor acts as the HMIS, so its `update` follows `cce-beckn-service`'s HMIS integration guide: CCE's `Ack` / `Nack` answers and codes, its fixed commitment, one event per message. The existing OpenHIM path and the collector output are unchanged by default (`beckn.enabled=false`, `output: collector`). See [Beckn Integration](docs/beckn-integration.md).
+
 ## Tech Stack
 
 | Technology | Version | Purpose |
@@ -154,6 +158,7 @@ docker compose up -d
 | [Flow Diagrams](docs/flow-diagrams.md) | Mermaid sequence & flow diagrams (with metrics/MDC annotations) |
 | [OpenHIM Channel Setup](docs/openhim-channel-setup.md) | Step-by-step guide to add the adaptor as a secondary route on an existing OpenHIM channel |
 | [Monitoring & Alerting](docs/monitoring-alerting.md) | Prometheus alert rules, Grafana dashboard panels, log-based monitoring, threshold recommendations |
+| [Beckn Integration](docs/beckn-integration.md) | Beckn endpoints, per-source Beckn output to CCE, settings, metrics, risks |
 | [Release Notes v1.0.0](docs/release-notes-v1.0.0.md) | Production deployment guide, env vars, OpenHIM setup, smoke tests, rollback |
 
 ## Endpoints

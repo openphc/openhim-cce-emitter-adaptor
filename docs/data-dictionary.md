@@ -137,6 +137,7 @@ Prefix: `cce.emitter`
 |----------|------|---------|-------------|
 | `cce.emitter.patient-identifier-system` | String | `http://openphc.org/identifier/upid` | System URI used to match the UPID in `Patient.identifier[]`. When processing a Patient resource, the adaptor searches `identifier[]` for an entry with this system and uses its `value` as the subject. Falls back to `Patient.id` if no match. |
 | `cce.emitter.sources.ebuzima.client-id` | String | `ebuzima-emr-client` | OpenHIM client ID for eBUZIMA EMR. Matched against `X-OpenHIM-ClientID` or `X-Source-System` header for adaptor routing. |
+| `cce.emitter.sources.<key>.output` | String | `collector` | **Beckn.** `collector`: post the CloudEvent to the CCE Collector, as today. `beckn`: wrap it and send it to CCE over Beckn. See §9. |
 
 ### 3.5 Facility Filter Properties
 
@@ -459,3 +460,86 @@ Registered in `InboundEventService` and `CollectorForwardingService` via constru
 | `source` | Resolved source key | Source system identifier (e.g., `"ebuzima"`) |
 | `eventType` | FHIR `resourceType` | CloudEvents `type` field |
 | `subject` | Patient UPID | Patient identifier for the event |
+
+## 9. Beckn Fields and Settings (Proposal)
+
+> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). With `beckn.enabled=false` (default) and every source on `output: collector` (default), the CloudEvent and the collector output in §1 are unchanged.
+
+### 9.1 `CceClinicalEvent` Box
+
+The box sits in `message.contract.performance[0].performanceAttributes` of a Beckn `update`, on both legs: HMIS → OpenHIM (inbound) and OpenHIM → CCE (outbound). Every `update` carries **exactly one** performance entry; the unwrap endpoint and CCE refuse any other count with `BAD_REQUEST`.
+
+| Message field | Limit (CCE) | Description |
+|---------------|-------------|-------------|
+| `performance[0].id` | Required, at most 50 characters | The event id. Outbound, this adaptor's CloudEvent `id` (36-character UUID v5). CCE uses it unchanged as its CloudEvent `id` |
+| `context.bapId` | At most 100 characters | Outbound, OpenHIM's `beckn.self.bap-id`. CCE uses it as CloudEvent `source` |
+| `context.messageId` | At most 100 characters | A new UUID per message |
+| `context.networkId` | Optional | `beckn.self.network-id` when set |
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `@context` | Yes | `<schema-base-url>/CceClinicalEvent/v1.0/context.jsonld`. Default base: `https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema` |
+| `@type` | Yes | `cce:CceClinicalEvent` |
+| `eventType` | Yes | Any non-empty string for CCE. This adaptor sends the FHIR resource type, e.g. `Encounter`. Values to agree with the CCE team |
+| `patientId` | Yes | Patient UPID |
+| `fhirVersion` | Yes | Always `4.0.1` |
+| `resource` | Yes | One FHIR R4 resource, with `resourceType` |
+| `facilityId` | No | Facility id |
+| `facilityName` | No | Facility display name |
+| `sourceEventId` | No | The sender's own id for the event |
+
+### 9.2 Inbound Box → Channel Request
+
+| Channel request part | Taken from |
+|----------------------|------------|
+| Body | `performance[0].performanceAttributes.resource`, as it is |
+| `X-Source-System` | `beckn.subscribers[].source-system` of the subscriber matched by `context.bapId` |
+| `X-Source-Event-Id` | `performance[0].id` → CloudEvent `sourceeventid`; CloudEvent `id` = UUID v5 of `<source key>:<performance[0].id>` (`EventIdGenerator`) |
+| `X-Correlation-Id` | `context.messageId`. Used for `correlationid` only if `X-OpenHIM-TransactionID` is absent, which it is not when the request comes through OpenHIM |
+| `X-Facility-Id` | Not sent. Facility comes from the resource (`FacilityIdExtractor`) |
+
+The box's `eventType`, `patientId`, `fhirVersion` and `sourceEventId` are logged, not sent. The pipeline reads patient and facility from the resource.
+
+### 9.3 CloudEvent → Outbound Box
+
+| Box / message field | From the CloudEvent (§1.1) | Note |
+|---------------------|----------------------------|------|
+| `performance[0].id` | `id` | Fixed per event. CCE uses it unchanged as its CloudEvent `id` and knows the event by (OpenHIM's `bapId`, id), so a resent copy gets `DUPLICATE` |
+| `eventType` | `type` | |
+| `patientId` | `subject` | |
+| `facilityId` | `facilityid` | Left out when null |
+| `facilityName` | `facilityname` | Not in `CloudEventDto` today. Left out |
+| `sourceEventId` | `sourceeventid` | |
+| `fhirVersion` | — | `4.0.1` |
+| `resource` | `data` | Already redacted (§3.6) |
+| Not carried | `specversion`, `source`, `time`, `datacontenttype`, `correlationid`, `protocolinstanceid`, `protocoldefinitionid`, `actionid` | `cce-beckn-service` rebuilds the CloudEvent: `source` = OpenHIM's `bapId`, `time` = `context.timestamp`, `correlationid` = the outbound `context.messageId`, `datacontenttype` = `application/fhir+json`. The protocol fields are lost. Full mapping: [Beckn Integration §5.2](beckn-integration.md#52-cloudevent--cceclinicalevent-box) |
+
+### 9.4 Beckn Settings
+
+Prefix: `beckn`
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `beckn.enabled` | boolean | `false` | Turns on both Beckn endpoints and allows `output: beckn` |
+| `beckn.schema-base-url` | String | `https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema` | Base URL of the `CceClinicalEvent` schema. The files are in `cce-beckn-service`'s `schema/` folder |
+| `beckn.onix.bap-caller-url` | String | — | `onix-bap` caller, e.g. `http://openhim-onix-bap:8081/bap/caller` |
+| `beckn.onix.bpp-caller-url` | String | — | `onix-bpp` caller, e.g. `http://openhim-onix-bpp:8082/bpp/caller` |
+| `beckn.onix.timeout` | int | `25000` | Connect + read timeout for onix calls, in ms. See [Beckn Integration §8.3](beckn-integration.md#83-every-answer-returns-in-the-same-call) |
+| `beckn.self.network-id` | String | — | Optional. Put into `context.networkId` of the `update` to CCE |
+| `beckn.self.bap-id`, `bap-uri` | String | — | OpenHIM's consumer id and URI (towards CCE). `bap-id` at most 100 characters. Must match OpenHIM's entry in CCE's HMIS list |
+| `beckn.self.bpp-id`, `bpp-uri` | String | — | OpenHIM's provider id and URI (towards each HMIS) |
+| `beckn.cce.bpp-id`, `bpp-uri` | String | — | CCE's provider id and URI |
+| `beckn.cce.contract-id`, `transaction-id` | String (UUID) | — | The HIE's contract with CCE. Issued by CCE |
+| `beckn.cce.commitment-file` | Resource | — | CCE's fixed `cce-care-coordination` commitment, sent in every `update` to CCE. A copy of `cce-beckn-service`'s `commitment.json` |
+| `beckn.cce.retry.max-attempts` | int | `1` | Tries per `update` to CCE. No retry inside the route: a second try would not fit the channel's timeout. The HMIS resends |
+| `beckn.openhim-channel.url` | String | — | OpenHIM channel the unwrap endpoint posts to |
+| `beckn.openhim-channel.username`, `password` | String | — | OpenHIM client for the unwrap endpoint. Must not equal any `cce.emitter.sources.<key>.client-id` |
+| `beckn.openhim-channel.timeout` | int | `35000` | Wait for the channel's answer, in ms |
+| `beckn.subscribers[].subscriber-id`, `subscriber-uri` | String | — | The HMIS's Beckn consumer id and URI |
+| `beckn.subscribers[].contract-id`, `transaction-id` | String (UUID) | — | The HMIS's "HIE feed" contract. Issued by OpenHIM |
+| `beckn.subscribers[].commitment-file` | Resource | — | OpenHIM's own HIE feed commitment (`hie-event-feed`), repeated in `on_update` to the HMIS |
+| `beckn.subscribers[].source-system` | String | — | Source key under `cce.emitter.sources`, sent as `X-Source-System` |
+
+### 9.5 Beckn Metrics and MDC
+
+Metrics are listed in [Beckn Integration §11](beckn-integration.md#11-metrics-proposal). MDC keys: `becknMessageId`, `becknTransactionId`, `becknAction`, `subscriber`, alongside those in §8.

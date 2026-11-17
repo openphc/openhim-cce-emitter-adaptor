@@ -16,6 +16,7 @@ import org.openphc.cce.emitter.service.CollectorTokenService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
@@ -30,6 +31,8 @@ import org.springframework.web.client.RestClient;
  * <ul>
  *   <li>{@code collectorRestClient} — targets the CCE Collector with JSON content type and configurable timeout</li>
  *   <li>{@code coreApiRestClient} — targets the OpenHIM Core API with Basic Auth</li>
+ *   <li>{@code becknOnixRestClient} — {@code openhim-onix} callers (only with {@code beckn.enabled=true})</li>
+ *   <li>{@code openHimChannelRestClient} — the OpenHIM Beckn channel (only with {@code beckn.enabled=true})</li>
  * </ul>
  */
 @Configuration
@@ -113,6 +116,42 @@ public class RestClientConfig {
         }
 
         return builder.build();
+    }
+
+    /**
+     * Creates a {@link RestClient} for the two {@code openhim-onix} callers ({@code onix-bap} and
+     * {@code onix-bpp}). Absolute URLs are used per call. No auth: the adapter signs the message.
+     * Connect and read timeout from {@code beckn.onix.timeout} (spec §8.3).
+     */
+    @Bean
+    @Qualifier("becknOnixRestClient")
+    @ConditionalOnProperty(prefix = "beckn", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RestClient becknOnixRestClient(BecknProperties properties) {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(Duration.ofMillis(properties.onix().timeout()));
+        requestFactory.setReadTimeout(Duration.ofMillis(properties.onix().timeout()));
+        return RestClient.builder().requestFactory(requestFactory).build();
+    }
+
+    /**
+     * Creates a {@link RestClient} for the OpenHIM channel the Beckn unwrap endpoint posts to,
+     * with the endpoint's OpenHIM client (Basic Auth) and {@code beckn.openhim-channel.timeout}.
+     * Trusts OpenHIM Core's self-signed certificate, like {@code coreApiRestClient}.
+     */
+    @Bean
+    @Qualifier("openHimChannelRestClient")
+    @ConditionalOnProperty(prefix = "beckn", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RestClient openHimChannelRestClient(BecknProperties properties) {
+        SimpleClientHttpRequestFactory requestFactory = createTrustAllRequestFactory();
+        requestFactory.setConnectTimeout(Duration.ofMillis(properties.openhimChannel().timeout()));
+        requestFactory.setReadTimeout(Duration.ofMillis(properties.openhimChannel().timeout()));
+        String password = properties.openhimChannel().password() != null ? properties.openhimChannel().password() : "";
+        String credentials = properties.openhimChannel().username() + ":" + password;
+        return RestClient.builder()
+                .requestFactory(requestFactory)
+                .defaultHeader("Authorization",
+                        "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .build();
     }
 
     /**

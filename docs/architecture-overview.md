@@ -58,6 +58,8 @@ The Emitter Adaptor is a generic **OpenHIM mediator** built as a standalone **Sp
 └─────────────────────────────────────────────────────────────┘
 ```
 
+> **Beckn (built, on by default on this branch).** On branch `demo-beckn` the adaptor can also take events from HMIS systems over a Beckn network and send them on to CCE over Beckn. The existing OpenHIM path and the collector output above are unchanged by default. See §15 and [Beckn Integration](beckn-integration.md).
+
 ## 3. Architecture Principles
 
 | Principle | Application |
@@ -408,3 +410,50 @@ These settings are in the base `application.yml` and carry through to all profil
 | **Stateless** | No local database; all state in OpenHIM and CCE platform |
 | **Retry** | Max 3 retries with exponential backoff for Collector calls |
 | **Max payload** | 1 MB (matching Collector limit) |
+
+## 15. Beckn Integration (Proposal)
+
+> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md).
+
+With `beckn.enabled=false` (the default) and no source set to `output: beckn`, nothing in §1–§14 changes.
+
+### 15.1 Context
+
+```
+HMIS (OpenMRS, Spice) ── its onix(bap) ══► openhim-onix(bpp)
+                                               │ POST /beckn/bpp-webhook/update
+                                               ▼
+                               ┌──── CCE Emitter Adaptor ────┐
+                               │ unwrap: FHIR + headers       │──► OpenHIM channel (new, /inbound primary)
+                               │                              │◄── POST /inbound (existing pipeline)
+                               │ output per source:           │
+                               │   collector → CCE Collector  │   (today)
+                               │   beckn     → wrap           │──► openhim-onix(bap) ══► cce-onix(bpp) → cce-beckn-service (/api/bpp-webhook) → CCE Collector
+                               │ POST /beckn/bap-webhook/...  │◄── openhim-onix(bap) (CCE's on_update)
+                               └──────────────────────────────┘
+```
+
+`openhim-onix` is the HIE's Beckn adapter, owned by the HIE team. `onix-bpp` faces the HMIS systems; `onix-bap` faces CCE.
+
+### 15.2 Where the Beckn parts sit
+
+| Part | Package | Role |
+|------|---------|------|
+| `BecknBppWebhookController`, `BecknBapWebhookController` | `controller` | The two new endpoints |
+| `BecknInboundUnwrapper` | `adaptor` | Subscriber and contract check, takes the FHIR resource out of the `CceClinicalEvent` box |
+| `BecknInboundService`, `OpenHimChannelClient`, `BecknCallbackService` | `service` | Posts the resource to the OpenHIM channel, maps the answer to `Ack` or `Nack` (CCE's body shape; codes `BAD_REQUEST`, `NOT_SUPPORTED`, `EVENT_REJECTED`, `UNAVAILABLE`), sends `on_update` |
+| `EventForwardingRouter`, `BecknForwardingService` | `service` | Chooses the output per source; wraps the CloudEvent and sends `update` to `onix-bap`; reads CCE's `ACK` / `NACK` |
+| `CceClinicalEventMapper` | `cloudevents` | CloudEvent → `CceClinicalEvent` box |
+| `BecknProperties`, `SourceProperties.output` | `config` | `beckn.*` and `cce.emitter.sources.<key>.output` |
+
+The pipeline in §7 is unchanged except step 5: `InboundEventService` asks `EventForwardingRouter` for the output instead of calling `CollectorForwardingService` directly.
+
+### 15.3 External interfaces added
+
+| Direction | Protocol | Endpoint | Content |
+|-----------|----------|----------|---------|
+| **IN** | HTTP POST | `/beckn/bpp-webhook/{action}` | Beckn `update` from an HMIS, via `onix-bpp` |
+| **IN** | HTTP POST | `/beckn/bap-webhook/{action}` | Beckn `on_update` from CCE, via `onix-bap` |
+| **OUT** | HTTP POST | `{beckn.openhim-channel.url}` | Raw FHIR resource, with `X-Source-System`, `X-Source-Event-Id`, `X-Correlation-Id` |
+| **OUT** | HTTP POST | `{onix-bap}/bap/caller/update` | Beckn `update` to CCE, with CCE's fixed `cce-care-coordination` commitment. `cce-onix` passes it to `cce-beckn-service` at `POST /api/bpp-webhook/update` (port 8075) |
+| **OUT** | HTTP POST | `{onix-bpp}/bpp/caller/on_update` | Beckn `on_update` to the HMIS |

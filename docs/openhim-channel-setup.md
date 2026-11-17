@@ -228,3 +228,87 @@ To stop forwarding traffic to the CCE Emitter Adaptor:
 3. Save the channel
 
 No cleanup is required on the adaptor side — it is stateless. The Collector handles deduplication, so no data impact from temporarily having the route active then removing it.
+
+## 9. Beckn Channel (Proposal)
+
+> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). §1–§8 are unchanged: the adaptor stays a secondary route on the eBUZIMA channel, and sources that post FHIR through OpenHIM keep going to the CCE Collector. This section is needed only with `beckn.enabled=true`.
+
+The adaptor's Beckn endpoint (`/beckn/bpp-webhook/update`) takes the FHIR resource out of a Beckn message from an HMIS and posts it into OpenHIM, so OpenHIM still authenticates and logs every event. OpenHIM routes it back to the adaptor's existing `/inbound`.
+
+### 9.1 Why a separate channel
+
+The Beckn endpoint reads the answer of `/inbound` to decide between `Ack` and `Nack` (400 `EVENT_REJECTED` or `BAD_REQUEST`, or 500 `UNAVAILABLE`). A **secondary** route's answer never reaches the client: the client gets the primary route's answer. So the Beckn traffic needs a channel where `/inbound` is the **primary** route. The eBUZIMA channel is not changed.
+
+### 9.2 Client
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| **Client ID** | `cce-beckn-endpoint` | Same as `beckn.openhim-channel.username` |
+| **Name** | `CCE Emitter Adaptor — Beckn endpoint` | |
+| **Roles** | `cce-beckn` | Only this channel allows it |
+| **Authentication** | Basic auth | Password in `OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_PASSWORD` |
+
+**Do not** set this client id as the `client-id` of any source under `cce.emitter.sources`. `X-OpenHIM-ClientID` is matched before `X-Source-System`; if the Beckn client matched a source, every Beckn event would be credited to that source. The adaptor refuses to start in that case (`BecknStartupValidator`).
+
+### 9.3 Channel and Route
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| **Channel name** | `CCE Beckn feed` | |
+| **URL pattern** | `^/cce-beckn$` | `beckn.openhim-channel.url` ends with `/cce-beckn` |
+| **Methods** | `POST` | |
+| **Allowed** | `cce-beckn` | The role of the client above |
+| **Timeout** | Shorter than `beckn.openhim-channel.timeout` (35 s), longer than `beckn.onix.timeout` (25 s) | See [Beckn Integration §8.3](beckn-integration.md#83-every-answer-returns-in-the-same-call). At least 30000 ms: CCE's `Ack` alone can take 17 s |
+| **Route name** | `CCE Emitter Adaptor (Beckn)` | |
+| **Route host / port / path** | `cce-emitter-adaptor` / `8082` / `/inbound` | The existing endpoint |
+| **Primary** | **Yes** | **Critical** — the answer must reach the Beckn endpoint |
+
+```json
+{
+  "name": "CCE Beckn feed",
+  "urlPattern": "^/cce-beckn$",
+  "methods": ["POST"],
+  "allow": ["cce-beckn"],
+  "authType": "private",
+  "timeout": 30000,
+  "routes": [
+    {
+      "name": "CCE Emitter Adaptor (Beckn)",
+      "host": "cce-emitter-adaptor",
+      "port": 8082,
+      "path": "/inbound",
+      "primary": true,
+      "type": "http"
+    }
+  ]
+}
+```
+
+### 9.4 Headers on this channel
+
+| Header | Set by | Used for |
+|--------|--------|----------|
+| `X-Source-System` | Beckn endpoint: the subscriber's `source-system` | Source resolution (the client id matches no source) |
+| `X-Source-Event-Id` | Beckn endpoint: `performance[0].id` | CloudEvent `sourceeventid`, and a fixed CloudEvent `id` |
+| `X-Correlation-Id` | Beckn endpoint: `context.messageId` | Not used for `correlationid` here: `X-OpenHIM-TransactionID` wins |
+| `X-OpenHIM-ClientID`, `X-OpenHIM-TransactionID` | OpenHIM Core | As in §5 |
+
+Check in the first test that OpenHIM passes the three `X-` headers through to the route.
+
+### 9.5 Verify
+
+| Check | Expected |
+|-------|----------|
+| Transaction log | One transaction per Beckn event, client `cce-beckn-endpoint`, route `CCE Emitter Adaptor (Beckn)` with `202` |
+| Wrong `source-system` | Transaction `Completed` with `200` and `"status":"ignored"`; the HMIS gets `Nack` (400) `EVENT_REJECTED` |
+| CCE refuses the event | Transaction with `400` `COLLECTOR_CLIENT_ERROR`, message `CCE EVENT_REJECTED: …`; the HMIS gets `Nack` (400) `EVENT_REJECTED` with CCE's text |
+| CCE down | Transaction `Failed` with `502`; the HMIS gets `Nack` (500) `UNAVAILABLE` |
+
+### 9.6 Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Every Beckn `update` is answered `Nack` `EVENT_REJECTED`, text `ignored: …` | `source-system` not under `cce.emitter.sources`, or the Beckn client id matches a source's `client-id` | Fix the settings; restart |
+| HMIS gets `Nack` (500) `HIE_ERROR` after a 401 | Wrong `OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_PASSWORD`, or client not allowed on the channel | Check the client and the channel's `allow` list |
+| HMIS gets `Nack` (500) `UNAVAILABLE` although the transaction succeeded | A timeout on an outer hop is shorter than the inner one, often an onix `responseHeaderTimeout` left at 5 s | Fix the timeout budget. The HMIS's resend gets `Ack` and CCE answers `DUPLICATE`, so nothing is counted twice |
+| Beckn events go to the Collector, not to CCE over Beckn | The source has no `output: beckn` | Set `cce.emitter.sources.<key>.output: beckn` |

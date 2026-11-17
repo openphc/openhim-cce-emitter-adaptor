@@ -26,6 +26,10 @@ openhim:
   heartbeat:
     enabled: false
 
+# The collector-path tests run with Beckn off. BecknIntegrationTest turns it on itself.
+beckn:
+  enabled: false
+
 cce:
   collector:
     url: http://localhost:${wiremock.server.port:5055}

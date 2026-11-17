@@ -1,0 +1,15 @@
+{
+  "id": "cce-care-coordination",
+  "status": { "descriptor": { "code": "ACTIVE" } },
+  "resources": [
+    {
+      "id": "cce-care-coordination-resource",
+      "descriptor": { "name": "CCE care coordination" },
+      "quantity": { "count": 1 }
+    }
+  ],
+  "offer": {
+    "id": "cce-care-coordination-offer",
+    "resourceIds": ["cce-care-coordination-resource"]
+  }
+}
