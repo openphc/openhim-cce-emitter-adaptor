@@ -70,7 +70,7 @@ class BecknMessageFactoryTest {
     void onUpdate() throws Exception {
         JsonNode requestContext = mapper.readTree(update(ENCOUNTER)).path("context");
         ((com.fasterxml.jackson.databind.node.ObjectNode) requestContext).put("networkId", "hmis-net");
-        JsonNode m = factory.onUpdateAccepted(openmrsSubscriber(), requestContext, PERFORMANCE_ID);
+        JsonNode m = factory.onUpdateAccepted(openmrsSubscriber(), requestContext, OPENMRS_CONTRACT, PERFORMANCE_ID);
 
         JsonNode c = m.path("context");
         assertThat(c.path("action").asText()).isEqualTo("on_update");

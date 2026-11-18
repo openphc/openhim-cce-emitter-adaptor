@@ -39,6 +39,7 @@ public class BecknInboundUnwrapper {
      * @param context       the {@code update}'s context, as received
      * @param messageId     {@code context.messageId}
      * @param transactionId {@code context.transactionId}
+     * @param contractId    {@code message.contract.id}, echoed in the {@code on_update}
      * @param performanceId {@code performance[0].id}
      * @param eventType     the box's {@code eventType} (logged only)
      * @param resource      the FHIR resource, as it is
@@ -49,6 +50,7 @@ public class BecknInboundUnwrapper {
             JsonNode context,
             String messageId,
             String transactionId,
+            String contractId,
             String performanceId,
             String eventType,
             JsonNode resource,
@@ -66,15 +68,12 @@ public class BecknInboundUnwrapper {
                 .orElseThrow(() -> BecknNackException.badRequest(
                         "Unknown subscriber: context.bapId '" + bapId + "' is not a subscriber of this HIE"));
 
-        // Step 2: the contract
+        // Step 2: the contract. No confirm in the demo, so nobody issues a contract id: any
+        // non-blank id is accepted (as cce-beckn-service does) and echoed in the on_update.
         JsonNode contract = body.path("message").path("contract");
         String contractId = text(contract, "id");
         if (contractId.isBlank()) {
             throw BecknNackException.badRequest("message.contract.id is missing");
-        }
-        if (!contractId.equals(subscriber.contractId())) {
-            throw BecknNackException.badRequest("Unknown contract: message.contract.id '" + contractId
-                    + "' is not the HIE feed contract of subscriber '" + bapId + "'");
         }
 
         // Step 3: exactly one performance entry with an id, the box and a resource
@@ -101,7 +100,7 @@ public class BecknInboundUnwrapper {
 
         String messageId = text(context, "messageId");
         return new UnwrappedEvent(subscriber, context, messageId, text(context, "transactionId"),
-                performanceId, text(attrs, "eventType"), resource,
+                contractId, performanceId, text(attrs, "eventType"), resource,
                 headers(subscriber, performanceId, messageId));
     }
 

@@ -529,14 +529,13 @@ Prefix: `beckn`
 | `beckn.self.bap-id`, `bap-uri` | String | — | OpenHIM's consumer id and URI (towards CCE). `bap-id` at most 100 characters. Must match OpenHIM's entry in CCE's HMIS list |
 | `beckn.self.bpp-id`, `bpp-uri` | String | — | OpenHIM's provider id and URI (towards each HMIS) |
 | `beckn.cce.bpp-id`, `bpp-uri` | String | — | CCE's provider id and URI |
-| `beckn.cce.contract-id`, `transaction-id` | String (UUID) | — | The HIE's contract with CCE. Issued by CCE |
+| `beckn.cce.contract-id`, `transaction-id` | String (UUID) | — | Sent in every `update` to CCE. Without `confirm` no contract id is issued; cce-beckn-service only needs a non-blank one. CCE's `on_update` is not checked against it |
 | `beckn.cce.commitment-file` | Resource | — | CCE's fixed `cce-care-coordination` commitment, sent in every `update` to CCE. A copy of `cce-beckn-service`'s `commitment.json` |
 | `beckn.cce.retry.max-attempts` | int | `1` | Tries per `update` to CCE. No retry inside the route: a second try would not fit the channel's timeout. The HMIS resends |
 | `beckn.openhim-channel.url` | String | — | OpenHIM channel the unwrap endpoint posts to |
 | `beckn.openhim-channel.username`, `password` | String | — | OpenHIM client for the unwrap endpoint. Must not equal any `cce.emitter.sources.<key>.client-id` |
 | `beckn.openhim-channel.timeout` | int | `35000` | Wait for the channel's answer, in ms |
 | `beckn.subscribers[].subscriber-id`, `subscriber-uri` | String | — | The HMIS's Beckn consumer id and URI |
-| `beckn.subscribers[].contract-id`, `transaction-id` | String (UUID) | — | The HMIS's "HIE feed" contract. Issued by OpenHIM |
 | `beckn.subscribers[].commitment-file` | Resource | — | OpenHIM's own HIE feed commitment (`hie-event-feed`), repeated in `on_update` to the HMIS |
 | `beckn.subscribers[].source-system` | String | — | Source key under `cce.emitter.sources`, sent as `X-Source-System` |
 

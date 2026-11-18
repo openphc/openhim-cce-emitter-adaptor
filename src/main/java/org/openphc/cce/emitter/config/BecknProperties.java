@@ -78,12 +78,14 @@ public record BecknProperties(
             @DefaultValue("35000") int timeout
     ) {}
 
-    /** One HMIS: its Beckn id and URI, its HIE feed ids and commitment, and the source key its events use. */
+    /**
+     * One HMIS: its Beckn id and URI, its HIE feed commitment, and the source key its events use.
+     * No contract or transaction id: without confirm none is issued, so the HIE accepts the HMIS's
+     * own and echoes them.
+     */
     public record Subscriber(
             String subscriberId,
             String subscriberUri,
-            String contractId,
-            String transactionId,
             String commitmentFile,
             String sourceSystem
     ) {}

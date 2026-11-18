@@ -102,8 +102,6 @@ public class BecknStartupValidator {
             String name = "beckn.subscribers[" + i + "]";
             require(errors, s.subscriberId(), name + ".subscriber-id");
             require(errors, s.subscriberUri(), name + ".subscriber-uri");
-            require(errors, s.contractId(), name + ".contract-id");
-            require(errors, s.transactionId(), name + ".transaction-id");
             require(errors, s.sourceSystem(), name + ".source-system");
             if (s.subscriberId() != null && !ids.add(s.subscriberId())) {
                 errors.add(name + ".subscriber-id '" + s.subscriberId() + "' is listed twice");

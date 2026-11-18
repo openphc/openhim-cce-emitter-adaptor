@@ -69,10 +69,11 @@ public class BecknMessageFactory {
 
     /**
      * The {@code on_update} with {@code ACCEPTED} to an HMIS, answering its {@code update}: same
-     * {@code transactionId} and {@code messageId}, {@code networkId} copied when the update had one.
+     * contract id, {@code transactionId} and {@code messageId}, {@code networkId} copied when the
+     * update had one.
      */
     public ObjectNode onUpdateAccepted(BecknProperties.Subscriber subscriber, JsonNode requestContext,
-                                       String performanceId) {
+                                       String contractId, String performanceId) {
         ObjectNode root = mapper.createObjectNode();
         ObjectNode context = root.putObject("context");
         context.put("version", VERSION);
@@ -90,7 +91,7 @@ public class BecknMessageFactory {
         context.put("timestamp", Instant.now().toString());
 
         ObjectNode contract = root.putObject("message").putObject("contract");
-        contract.put("id", subscriber.contractId());
+        contract.put("id", contractId);
         contract.putObject("status").put("code", "ACTIVE");
         contract.putArray("commitments").add(commitments.forSubscriber(subscriber.subscriberId()));
         ObjectNode performance = contract.putArray("performance").addObject();

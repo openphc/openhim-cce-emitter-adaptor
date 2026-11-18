@@ -117,7 +117,7 @@ public class BecknInboundService {
                     .register(meterRegistry).increment();
         }
         if (answer.isAck()) {
-            callbacks.sendOnUpdateAccepted(event.subscriber(), event.context(), event.performanceId());
+            callbacks.sendOnUpdateAccepted(event.subscriber(), event.context(), event.contractId(), event.performanceId());
         }
         return answer;
     }

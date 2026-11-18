@@ -56,10 +56,10 @@ public class BecknCallbackService {
 
     /** Schedules the {@code on_update}; returns at once. */
     public void sendOnUpdateAccepted(BecknProperties.Subscriber subscriber, JsonNode requestContext,
-                                     String performanceId) {
+                                     String contractId, String performanceId) {
         String messageId = requestContext.path("messageId").asText("");
         String transactionId = requestContext.path("transactionId").asText("");
-        JsonNode message = messages.onUpdateAccepted(subscriber, requestContext, performanceId);
+        JsonNode message = messages.onUpdateAccepted(subscriber, requestContext, contractId, performanceId);
         try {
             executor.execute(() -> send(subscriber, message, messageId, transactionId));
         } catch (RejectedExecutionException e) {
