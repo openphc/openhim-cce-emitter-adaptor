@@ -62,11 +62,6 @@ public class CceCallbackService {
                 return nack(action, messageId, BecknNackException.BAD_REQUEST,
                         "context.bppId '" + bppId + "' is not CCE");
             }
-            String contractId = contract.path("id").asText("");
-            if (!contractId.equals(props.cce().contractId())) {
-                return nack(action, messageId, BecknNackException.BAD_REQUEST,
-                        "message.contract.id '" + contractId + "' is not the HIE's contract with CCE");
-            }
             if ("ACCEPTED".equals(status) || "DUPLICATE".equals(status)) {
                 Counter.builder("cce.emitter.beckn.cce.onupdate.received").description("CCE's on_update")
                         .tag("status", status).register(meterRegistry).increment();

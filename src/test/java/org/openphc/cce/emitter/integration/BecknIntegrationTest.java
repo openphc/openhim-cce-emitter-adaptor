@@ -105,8 +105,6 @@ class BecknIntegrationTest {
         r.add("beckn.openhim-channel.timeout", () -> "8000");
         r.add("beckn.subscribers[0].subscriber-id", () -> OPENMRS_BAP_ID);
         r.add("beckn.subscribers[0].subscriber-uri", () -> "https://openmrs.example.org/bap/receiver");
-        r.add("beckn.subscribers[0].contract-id", () -> OPENMRS_CONTRACT);
-        r.add("beckn.subscribers[0].transaction-id", () -> OPENMRS_TXN);
         r.add("beckn.subscribers[0].source-system", () -> OPENMRS_SOURCE);
     }
 
@@ -519,12 +517,12 @@ class BecknIntegrationTest {
         }
 
         @Test
-        @DisplayName("on_update on another contract → Nack 400 BAD_REQUEST")
+        @DisplayName("on_update on another contract id → Ack (no contract id is issued without confirm)")
         void otherContract() throws Exception {
             mockMvc.perform(post("/beckn/bap-webhook/on_update").contentType(MediaType.APPLICATION_JSON)
                             .content(onUpdate(CCE_BPP_ID, "other", "ACCEPTED")))
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.message.error.code", is("BAD_REQUEST")));
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.message.status", is("ACK")));
         }
 
         @Test

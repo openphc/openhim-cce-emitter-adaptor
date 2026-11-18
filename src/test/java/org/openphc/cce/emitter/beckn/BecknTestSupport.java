@@ -22,7 +22,7 @@ public final class BecknTestSupport {
 
     public static BecknProperties.Subscriber openmrsSubscriber() {
         return new BecknProperties.Subscriber(OPENMRS_BAP_ID, "https://openmrs.example.org/bap/receiver",
-                OPENMRS_CONTRACT, OPENMRS_TXN, "classpath:beckn/commitment-hie-feed.json", OPENMRS_SOURCE);
+                "classpath:beckn/commitment-hie-feed.json", OPENMRS_SOURCE);
     }
 
     public static BecknProperties properties(boolean enabled, String channelUser, List<BecknProperties.Subscriber> subs) {

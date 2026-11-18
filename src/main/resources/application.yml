@@ -187,12 +187,10 @@ beckn:
     username: ${OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_ID:cce-beckn-endpoint}
     password: ${OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_PASSWORD:}
     timeout: ${OPENHIM_EMITTER_BECKN_OPENHIM_CHANNEL_TIMEOUT_MS:35000}   # §8.3
-  # One entry per HMIS; ids issued by OpenHIM. Example:
+  # One entry per HMIS. Any non-blank contract id from the HMIS is accepted and echoed. Example:
   # subscribers:
   #   - subscriber-id: bap.openmrs.example.org
   #     subscriber-uri: https://openmrs.example.org/bap/receiver
-  #     contract-id: 5b1e7f3c-2a4d-4c6e-8f90-a1b2c3d4e5f6
-  #     transaction-id: 0d5f8c1a-7b2e-4f6d-9a3c-1e2b3c4d5e6f
   #     commitment-file: classpath:beckn/commitment-hie-feed.json
   #     source-system: openmrs-kicukiro           # a key under cce.emitter.sources, normally output: beckn
   subscribers: []

@@ -441,7 +441,7 @@ Called by `onix-bpp` with requests from an HMIS (OpenMRS, Spice) on its "HIE fee
 | `update` | Unwraps the FHIR resource and posts it to the OpenHIM channel (below) | By the channel's answer |
 | `confirm`, `status`, `cancel`, `select`, `init`, `track`, `rate`, `support`, any other | Nothing. Not supported in the demo | `Nack` (400) `NOT_SUPPORTED` |
 
-**Request:** a Beckn `update`. `context.bapId` must be a `beckn.subscribers[].subscriber-id` and `message.contract.id` its `contract-id`, or the answer is `Nack` (400) `BAD_REQUEST`. **Exactly one** `performance` entry, with an `id`, whose `performanceAttributes` is a `CceClinicalEvent` box; more than one is refused with `BAD_REQUEST`. Sample: [Beckn Integration §3.6](beckn-integration.md#36-example-inbound-update).
+**Request:** a Beckn `update`. `context.bapId` must be a `beckn.subscribers[].subscriber-id` and `message.contract.id` must be present (any value), or the answer is `Nack` (400) `BAD_REQUEST`. **Exactly one** `performance` entry, with an `id`, whose `performanceAttributes` is a `CceClinicalEvent` box; more than one is refused with `BAD_REQUEST`. Sample: [Beckn Integration §3.6](beckn-integration.md#36-example-inbound-update).
 
 **Call to the OpenHIM channel:**
 

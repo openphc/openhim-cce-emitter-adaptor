@@ -658,8 +658,6 @@ beckn:
   subscribers:
     - subscriber-id: bap.openmrs.example.org
       subscriber-uri: https://openmrs.example.org/bap/receiver
-      contract-id: 5b1e7f3c-2a4d-4c6e-8f90-a1b2c3d4e5f6
-      transaction-id: 0d5f8c1a-7b2e-4f6d-9a3c-1e2b3c4d5e6f
       commitment-file: classpath:beckn/commitment-hie-feed.json
       source-system: openmrs-kicukiro
 
@@ -684,7 +682,7 @@ The body is the sample in [Beckn Integration §3.6](beckn-integration.md#36-exam
 | Check | Expected |
 |-------|----------|
 | Every answer | The body is `{ "message": { "status": "ACK" or "NACK", "messageId": <the request's>, … } }` |
-| Unknown `bapId` or contract id | 400 `Nack` `BAD_REQUEST`; no call to the channel |
+| Unknown `bapId` or missing contract id | 400 `Nack` `BAD_REQUEST`; no call to the channel |
 | Two `performance` entries | 400 `Nack` `BAD_REQUEST`; no call to the channel |
 | `X-Source-System` names no source | Channel answers 200 `ignored` → 400 `Nack` `EVENT_REJECTED`; `cce_emitter_beckn_channel_ignored_total` goes up |
 | WireMock `/bap/caller/update` returns 400 `EVENT_REJECTED` | `/inbound` answers 400 `COLLECTOR_CLIENT_ERROR` → 400 `Nack` `EVENT_REJECTED` with CCE's text; no `on_update` |

@@ -67,9 +67,14 @@ class BecknInboundUnwrapperTest {
     }
 
     @Test
-    void unknownContract() {
-        assertBadRequest(update(OPENMRS_BAP_ID, "other-contract", entry(PERFORMANCE_ID, ENCOUNTER)),
-                "Unknown contract");
+    void anyContractIdIsAccepted() throws Exception {
+        var event = unwrapper.unwrap(json(update(OPENMRS_BAP_ID, "hmis-chosen-contract", entry(PERFORMANCE_ID, ENCOUNTER))));
+        assertThat(event.contractId()).isEqualTo("hmis-chosen-contract");
+    }
+
+    @Test
+    void missingContractId() {
+        assertBadRequest(update(OPENMRS_BAP_ID, "", entry(PERFORMANCE_ID, ENCOUNTER)), "message.contract.id is missing");
     }
 
     @Test

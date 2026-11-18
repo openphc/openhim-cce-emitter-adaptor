@@ -68,7 +68,7 @@ openhim-onix(bap) ──► CCE Emitter Adaptor: POST /beckn/bap-webhook/on_upda
 | HIE feed, one per HMIS | The HMIS (OpenMRS, Spice) | OpenHIM | Events as `update`. `on_update` with `ACCEPTED` |
 | HIE to CCE | OpenHIM | CCE | Events as `update`. `on_update` with `ACCEPTED` or `DUPLICATE` |
 
-The provider of a contract issues its contract id, `transactionId` and commitment. OpenHIM issues each HMIS's "HIE feed" ids and its own commitment (`hie-event-feed`, §3.4). CCE issues the HIE's contract with CCE and its fixed commitment (`cce-care-coordination`, §5.3). No message opens a contract in the demo (no `confirm`). The ids go into the settings on both sides.
+No message opens a contract in the demo (no `confirm`), so no contract id is issued. The sender puts a non-blank contract id of its choosing in each `update`; the receiver does not match it against settings, as `cce-beckn-service` does, and echoes it in `on_update`. On the HMIS leg, OpenHIM accepts any non-blank contract id and repeats its own commitment (`hie-event-feed`, §3.4). Towards CCE, OpenHIM sends `beckn.cce.contract-id` and CCE's fixed commitment (`cce-care-coordination`, §5.3).
 
 | Container | OpenHIM plays | Called by this adaptor | Calls this adaptor |
 |---|---|---|---|
@@ -86,7 +86,7 @@ The provider of a contract issues its contract id, `transactionId` and commitmen
 | Step | What the adaptor does | If it fails |
 |---|---|---|
 | 1 | Finds the HMIS by `context.bapId` in `beckn.subscribers[]` | `Nack` (400) `BAD_REQUEST`, unknown subscriber |
-| 2 | Checks `message.contract.id` is that subscriber's `contract-id` | `Nack` (400) `BAD_REQUEST`, unknown contract |
+| 2 | Checks `message.contract.id` is present. Any value is accepted | `Nack` (400) `BAD_REQUEST`, missing contract id |
 | 3 | Checks there is **exactly one** `performance` entry with an `id`, its box is `cce:CceClinicalEvent`, and `resource` has a `resourceType` | `Nack` (400) `BAD_REQUEST`. The text names the field. None or more than one entry is refused |
 | 4 | Takes `performance[0].performanceAttributes.resource`, as it is | — |
 | 5 | Posts the resource to the OpenHIM channel URL, with the OpenHIM client credentials and the headers below | See §3.3 |
@@ -159,7 +159,7 @@ Sent after the `Ack` has been returned, through `onix-bpp`'s `/bpp/caller/on_upd
 | `context.bapId`, `bapUri` | The subscriber's `subscriber-id`, `subscriber-uri` |
 | `context.bppId`, `bppUri` | `beckn.self.bpp-id`, `bpp-uri` |
 | `context.transactionId`, `messageId` | Those of the `update` it answers |
-| `message.contract.id` | The subscriber's `contract-id` |
+| `message.contract.id` | The `update`'s `message.contract.id` |
 | `message.contract.status` | `{ "code": "ACTIVE" }` |
 | `message.contract.commitments` | From the subscriber's `commitment-file`: OpenHIM's own HIE feed commitment (below) |
 | `message.contract.performance[0]` | `{ "id": <the update's performance[0].id>, "status": { "code": "ACCEPTED" } }` |
@@ -425,7 +425,7 @@ Differences from the collector path:
 
 ### 5.5 OpenHIM in CCE's HMIS list
 
-CCE issues the contract id and `transactionId` of the HIE's contract with CCE. OpenHIM must be entered in CCE's HMIS list (`cce-beckn-service`'s `config/hmis.yml`), with OpenHIM's consumer id as `subscriber-id`. The same values go into `beckn.self.*` and `beckn.cce.*` here (§7).
+The contract id and `transactionId` OpenHIM sends to CCE are agreed with CCE once (no `confirm`; cce-beckn-service only checks the contract id is non-blank). OpenHIM must be entered in CCE's HMIS list (`cce-beckn-service`'s `config/hmis.yml`), with OpenHIM's consumer id as `subscriber-id`. The same values go into `beckn.self.*` and `beckn.cce.*` here (§7).
 
 ```yaml
 cce:
@@ -447,7 +447,7 @@ CCE does not use this list to accept events; it has no allow-list for them. It u
 
 | Action | From | What the adaptor does | Answer |
 |---|---|---|---|
-| `on_update` | CCE (`bppId` = `beckn.cce.bpp-id`, contract = `beckn.cce.contract-id`) | Logs `messageId`, `performance[0].id` (the CloudEvent `id`) and the status, `ACCEPTED` or `DUPLICATE`. On `DUPLICATE`, also counts `cce.emitter.events.duplicate` | `Ack` |
+| `on_update` | CCE (`bppId` = `beckn.cce.bpp-id`; the contract id is not checked) | Logs `messageId`, `performance[0].id` (the CloudEvent `id`) and the status, `ACCEPTED` or `DUPLICATE`. On `DUPLICATE`, also counts `cce.emitter.events.duplicate` | `Ack` |
 | `on_update` from another `bppId`, or another contract | — | Logs it | `Nack` (400) `BAD_REQUEST` |
 | `on_status` (CCE alerts), any other | — | Logs it. CCE alerts are out of scope for now | `Nack` (400) `NOT_SUPPORTED` |
 
@@ -495,17 +495,13 @@ beckn:
     username: ${OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_ID:cce-beckn-endpoint}
     password: ${OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_PASSWORD}
     timeout: ${OPENHIM_EMITTER_BECKN_OPENHIM_CHANNEL_TIMEOUT_MS:35000}   # see §8.3
-  subscribers:                                   # one per HMIS; ids issued by OpenHIM
+  subscribers:                                   # one per HMIS
     - subscriber-id: bap.openmrs.example.org
       subscriber-uri: https://openmrs.example.org/bap/receiver
-      contract-id: 5b1e7f3c-2a4d-4c6e-8f90-a1b2c3d4e5f6
-      transaction-id: 0d5f8c1a-7b2e-4f6d-9a3c-1e2b3c4d5e6f
       commitment-file: classpath:beckn/commitment-hie-feed.json
       source-system: openmrs-kicukiro
     - subscriber-id: bap.spice.example.org
       subscriber-uri: https://spice.example.org/bap/receiver
-      contract-id: 2c8f4a6e-9b1d-4e3f-8a5c-7d9e1f3a5b7c
-      transaction-id: 6e2a4c8f-1d3b-4f5a-9c7e-3b5d7f9a1c3e
       commitment-file: classpath:beckn/commitment-hie-feed.json
       source-system: spice-beckn
 
@@ -534,7 +530,7 @@ cce:
 | `beckn.openhim-channel.url` | The channel the unwrap endpoint posts to |
 | `beckn.openhim-channel.username`, `password` | The OpenHIM client for the unwrap endpoint |
 | `beckn.openhim-channel.timeout` | Wait for the channel's answer, in ms. Default 35 000 (§8.3) |
-| `beckn.subscribers[]` | One entry per HMIS: its Beckn id and URI, its HIE feed ids and commitment, and the source key its events use |
+| `beckn.subscribers[]` | One entry per HMIS: its Beckn id and URI, the HIE feed commitment, and the source key its events use. No contract or transaction id: the HMIS's own are accepted and echoed |
 | `cce.emitter.sources.<key>.output` | `collector` or `beckn`. Unset: follows `beckn.enabled` (`beckn` when on) |
 
 Startup checks (proposal):

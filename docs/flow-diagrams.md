@@ -381,7 +381,7 @@ sequenceDiagram
     BPP->>BW: POST /beckn/bpp-webhook/update
     activate BW
     Note over BW: Counter: cce.emitter.beckn.received
-    BW->>BW: subscriber by context.bapId, check contract id,<br/>exactly one performance entry
+    BW->>BW: subscriber by context.bapId, contract id present,<br/>exactly one performance entry
     BW->>BW: take performance[0].performanceAttributes.resource
     BW->>OHC: POST channel (Basic auth)<br/>X-Source-System, X-Source-Event-Id, X-Correlation-Id
     activate OHC
@@ -427,7 +427,7 @@ sequenceDiagram
 flowchart TD
     A[POST /beckn/bpp-webhook/action] --> B{action = update?}
     B -->|No| N0[Nack 400<br/>NOT_SUPPORTED]
-    B -->|Yes| C{bapId in subscribers<br/>and contract id matches?}
+    B -->|Yes| C{bapId in subscribers<br/>and contract id present?}
     C -->|No| N1[Nack 400<br/>BAD_REQUEST]
     C -->|Yes| D{one performance entry,<br/>CceClinicalEvent box,<br/>resource with resourceType?}
     D -->|No| N2[Nack 400<br/>BAD_REQUEST]
@@ -477,7 +477,7 @@ sequenceDiagram
     CCE->>BAP: on_update (ACCEPTED or DUPLICATE)
     BAP->>CB: POST /beckn/bap-webhook/on_update
     activate CB
-    CB->>CB: check bppId and contract id
+    CB->>CB: check bppId
     Note over CB: Log messageId (of our update),<br/>performance id (CloudEvent id) + status. Log only
     Note over CB: Counter: cce.emitter.beckn.cce.onupdate.received<br/>DUPLICATE also: cce.emitter.events.duplicate
     CB-->>BAP: 200 ACK (callback's messageId)

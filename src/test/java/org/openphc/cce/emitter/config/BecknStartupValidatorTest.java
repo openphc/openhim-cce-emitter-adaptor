@@ -72,8 +72,7 @@ class BecknStartupValidatorTest {
     @Test
     @DisplayName("a subscriber's source-system is not a source → error")
     void unknownSourceSystem() {
-        BecknProperties.Subscriber s = new BecknProperties.Subscriber(OPENMRS_BAP_ID, "u", OPENMRS_CONTRACT,
-                OPENMRS_TXN, null, "nope");
+        BecknProperties.Subscriber s = new BecknProperties.Subscriber(OPENMRS_BAP_ID, "u", null, "nope");
         assertThat(validate(properties(true, "cce-beckn-endpoint", List.of(s)), DEFAULT_SOURCES))
                 .anySatisfy(e -> assertThat(e).contains("'nope' is not a key under cce.emitter.sources"));
     }
@@ -125,8 +124,6 @@ class BecknStartupValidatorTest {
             "beckn.openhim-channel.url=http://openhim/cce-beckn",
             "beckn.subscribers[0].subscriber-id=" + OPENMRS_BAP_ID,
             "beckn.subscribers[0].subscriber-uri=https://openmrs/bap",
-            "beckn.subscribers[0].contract-id=" + OPENMRS_CONTRACT,
-            "beckn.subscribers[0].transaction-id=" + OPENMRS_TXN,
             "beckn.subscribers[0].source-system=" + OPENMRS_SOURCE,
             "cce.emitter.sources.ebuzima.client-id=ebuzima-emr-client",
             "cce.emitter.sources." + OPENMRS_SOURCE + ".output=beckn",
