@@ -21,6 +21,17 @@ class EventIdGeneratorTest {
         generator = new EventIdGenerator();
     }
 
+    // --- A given event id (Sygnal) is kept ---
+
+    @Test
+    void generate_withGivenEventId_keepsIt() {
+        SourceMetadata meta = new SourceMetadata(
+                "openmrs", "0002", "enc-visit-001", "corr-123",
+                OffsetDateTime.now(ZoneOffset.UTC), "/inbound", "3f6c1c1e-8a53-4b0e-9d7a-2b6f4e1a9c10");
+
+        assertThat(generator.generate(meta)).isEqualTo("3f6c1c1e-8a53-4b0e-9d7a-2b6f4e1a9c10");
+    }
+
     // --- Deterministic ID generation (sourceEventId present) ---
 
     @Test

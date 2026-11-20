@@ -35,92 +35,100 @@ class ChannelAnswerMapperTest {
     }
 
     @Test
-    @DisplayName("202 processed → Ack")
+    @DisplayName("202 processed → Ack 202")
     void processedIsAck() {
         BecknAnswer a = map(202, "{\"status\":\"processed\",\"eventsForwarded\":1,\"events\":[]}");
         assertThat(a.isAck()).isTrue();
-        assertThat(a.status()).isEqualTo(HttpStatus.OK);
+        assertThat(a.status()).isEqualTo(HttpStatus.ACCEPTED);
     }
 
     @Test
-    @DisplayName("200 ignored → Nack 400 EVENT_REJECTED 'ignored: …'")
+    @DisplayName("200 ignored → Nack 400 BIZ_GENERIC_ERROR 'ignored: …'")
     void ignored() {
         assertNack(map(200, "{\"status\":\"ignored\",\"message\":\"No matching source or non-processable payload\"}"),
-                HttpStatus.BAD_REQUEST, "EVENT_REJECTED", "ignored: No matching source or non-processable payload");
+                HttpStatus.BAD_REQUEST, "BIZ_GENERIC_ERROR", "ignored: No matching source or non-processable payload");
     }
 
     @Test
-    @DisplayName("200 skipped → Nack 400 EVENT_REJECTED 'skipped: …'")
+    @DisplayName("200 skipped → Nack 400 BIZ_GENERIC_ERROR 'skipped: …'")
     void skipped() {
         assertNack(map(200, "{\"status\":\"skipped\",\"message\":\"Event skipped by facility filter\"}"),
-                HttpStatus.BAD_REQUEST, "EVENT_REJECTED", "skipped: Event skipped by facility filter");
+                HttpStatus.BAD_REQUEST, "BIZ_GENERIC_ERROR", "skipped: Event skipped by facility filter");
     }
 
     @Test
-    @DisplayName("other 200 → Nack 500 HIE_ERROR")
+    @DisplayName("other 200 → Nack 500 NET_INTERNAL_ERROR")
     void unexpected200() {
         assertNack(map(200, "{\"message\":\"Non-POST request ignored\"}"), HttpStatus.INTERNAL_SERVER_ERROR,
-                "HIE_ERROR", null);
+                "NET_INTERNAL_ERROR", null);
     }
 
     @Test
-    @DisplayName("400 PATIENT_ID_NOT_FOUND → EVENT_REJECTED with code and message")
+    @DisplayName("400 PATIENT_ID_NOT_FOUND → BIZ_GENERIC_ERROR with code and message")
     void patientIdNotFound() {
         assertNack(map(400, error("PATIENT_ID_NOT_FOUND", "No subject")), HttpStatus.BAD_REQUEST,
-                "EVENT_REJECTED", "PATIENT_ID_NOT_FOUND: No subject");
+                "BIZ_GENERIC_ERROR", "PATIENT_ID_NOT_FOUND: No subject");
     }
 
     @Test
-    @DisplayName("422 FHIR_MAPPING_ERROR → EVENT_REJECTED")
+    @DisplayName("422 FHIR_MAPPING_ERROR → BIZ_GENERIC_ERROR")
     void fhirMappingError() {
         assertNack(map(422, error("FHIR_MAPPING_ERROR", "bad json")), HttpStatus.BAD_REQUEST,
-                "EVENT_REJECTED", "FHIR_MAPPING_ERROR: bad json");
+                "BIZ_GENERIC_ERROR", "FHIR_MAPPING_ERROR: bad json");
     }
 
     @Test
-    @DisplayName("collector 4xx → EVENT_REJECTED with the collector's message")
+    @DisplayName("collector 4xx → BIZ_GENERIC_ERROR with the collector's message")
     void collectorRefusal() {
         assertNack(map(422, error("COLLECTOR_CLIENT_ERROR", "Collector returned 422: invalid")),
-                HttpStatus.BAD_REQUEST, "EVENT_REJECTED", "Collector returned 422: invalid");
+                HttpStatus.BAD_REQUEST, "BIZ_GENERIC_ERROR", "Collector returned 422: invalid");
     }
 
     @Test
-    @DisplayName("CCE EVENT_REJECTED → EVENT_REJECTED with CCE's text")
-    void cceEventRejected() {
-        assertNack(map(400, error("COLLECTOR_CLIENT_ERROR", "CCE EVENT_REJECTED: Payload validation failed")),
-                HttpStatus.BAD_REQUEST, "EVENT_REJECTED", "CCE: Payload validation failed");
+    @DisplayName("CCE BIZ_GENERIC_ERROR → Nack 400 BIZ_GENERIC_ERROR with CCE's text")
+    void cceRefusedEvent() {
+        assertNack(map(400, error("COLLECTOR_CLIENT_ERROR", "CCE BIZ_GENERIC_ERROR: Payload validation failed")),
+                HttpStatus.BAD_REQUEST, "BIZ_GENERIC_ERROR", "CCE: Payload validation failed");
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"BAD_REQUEST", "NOT_SUPPORTED"})
-    @DisplayName("CCE BAD_REQUEST / NOT_SUPPORTED → Nack 500 HIE_ERROR")
-    void cceRefusedOwnUpdate(String code) {
-        assertNack(map(400, error("COLLECTOR_CLIENT_ERROR", "CCE " + code + ": performance[0].id is missing")),
-                HttpStatus.INTERNAL_SERVER_ERROR, "HIE_ERROR", "CCE " + code + ": performance[0].id is missing");
+    @ValueSource(strings = {"SCH_SCHEMA_VALIDATION_FAILED", "SCH_TYPE_NOT_SUPPORTED"})
+    @DisplayName("CCE's other 4xx Nack → Nack 400 BIZ_GENERIC_ERROR naming CCE's code")
+    void cceOtherRefusal(String code) {
+        assertNack(map(400, error("COLLECTOR_CLIENT_ERROR", "CCE " + code + ": eventAttributes.patientId is missing")),
+                HttpStatus.BAD_REQUEST, "BIZ_GENERIC_ERROR", "CCE " + code + ": eventAttributes.patientId is missing");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"CTX_INVALID_FIELD", "CTX_MISSING_FIELD"})
+    @DisplayName("CCE refused the HIE's own context → Nack 500 NET_INTERNAL_ERROR")
+    void cceRefusedHieContext(String code) {
+        assertNack(map(400, error("COLLECTOR_CLIENT_ERROR", "CCE " + code + ": context.receiverId is 'x'")),
+                HttpStatus.INTERNAL_SERVER_ERROR, "NET_INTERNAL_ERROR", "CCE " + code + ": context.receiverId is 'x'");
     }
 
     @ParameterizedTest
     @ValueSource(ints = {401, 403, 404})
-    @DisplayName("OpenHIM 401 / 403 / 404 → Nack 500 HIE_ERROR")
+    @DisplayName("OpenHIM 401 / 403 / 404 → Nack 500 NET_INTERNAL_ERROR")
     void openHimRefused(int status) {
         BecknAnswer a = map(status, "Unauthorized");
-        assertNack(a, HttpStatus.INTERNAL_SERVER_ERROR, "HIE_ERROR", null);
+        assertNack(a, HttpStatus.INTERNAL_SERVER_ERROR, "NET_INTERNAL_ERROR", null);
         assertThat(a.text()).contains("OpenHIM answered HTTP " + status);
     }
 
     @ParameterizedTest
     @ValueSource(ints = {500, 502, 503, 504, 408, 429})
-    @DisplayName("5xx, 408, 429 → Nack 500 UNAVAILABLE")
+    @DisplayName("5xx, 408, 429 → Nack 500 NET_DOWNSTREAM_UNAVAILABLE")
     void serverErrors(int status) {
         assertNack(map(status, error("COLLECTOR_FORWARDING_ERROR", "down")), HttpStatus.INTERNAL_SERVER_ERROR,
-                "UNAVAILABLE", null);
+                "NET_DOWNSTREAM_UNAVAILABLE", null);
     }
 
     @Test
-    @DisplayName("no answer → Nack 500 UNAVAILABLE")
+    @DisplayName("no answer → Nack 500 NET_DOWNSTREAM_UNAVAILABLE")
     void noAnswer() {
         BecknAnswer a = mapper.map(HttpAnswer.unreachable("SocketTimeoutException: Read timed out"));
-        assertNack(a, HttpStatus.INTERNAL_SERVER_ERROR, "UNAVAILABLE", null);
+        assertNack(a, HttpStatus.INTERNAL_SERVER_ERROR, "NET_DOWNSTREAM_UNAVAILABLE", null);
         assertThat(a.text()).contains("Read timed out");
     }
 }

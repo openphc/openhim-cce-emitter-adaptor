@@ -145,7 +145,7 @@ cce:
     facility-filter:
       ids: []
     # Each source may set `output: collector` (POST to the CCE Collector) or `output: beckn` (send to
-    # CCE as a Beckn update; needs beckn.enabled=true). Unset follows beckn.enabled: beckn when on, else collector.
+    # CCE as a sygnal/event/report; needs beckn.enabled=true). Unset follows beckn.enabled: beckn when on, else collector.
     # See docs/beckn-integration.md §5.1.
     sources:
       ebuzima:
@@ -157,41 +157,33 @@ cce:
       spice-facility:
         client-id: spice-facility-client
 
-# Beckn role (docs/beckn-integration.md §7). On by default on the demo-beckn branch: both Beckn endpoints,
-# and every source without an explicit output sends to CCE over Beckn. OPENHIM_EMITTER_BECKN_ENABLED=false turns it all off.
-# With beckn.enabled=true the adaptor refuses to start unless the ids below, the subscribers and
-# the commitment files are set and consistent (BecknStartupValidator).
+# Sygnal role (docs/beckn-integration.md §7). On by default on this branch: the sygnal/event/report endpoint,
+# and every source without an explicit output sends to CCE as a sygnal/event/report. OPENHIM_EMITTER_BECKN_ENABLED=false
+# turns it all off. With beckn.enabled=true the adaptor refuses to start unless the ids below and the
+# subscribers are set and consistent (BecknStartupValidator).
 beckn:
   enabled: ${OPENHIM_EMITTER_BECKN_ENABLED:true}
   schema-base-url: ${OPENHIM_EMITTER_BECKN_SCHEMA_BASE_URL:https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema}
-  onix:
-    bap-caller-url: ${OPENHIM_EMITTER_BECKN_ONIX_BAP_CALLER_URL:http://openhim-onix-bap:8081/bap/caller}
-    bpp-caller-url: ${OPENHIM_EMITTER_BECKN_ONIX_BPP_CALLER_URL:http://openhim-onix-bpp:8082/bpp/caller}
-    timeout: ${OPENHIM_EMITTER_BECKN_ONIX_TIMEOUT_MS:25000}          # §8.3
-  self:                                              # OpenHIM's own Beckn ids
-    network-id: ${OPENHIM_EMITTER_BECKN_SELF_NETWORK_ID:}            # optional; goes into context.networkId
-    bap-id: ${OPENHIM_EMITTER_BECKN_SELF_BAP_ID:}                    # at most 100 characters; CCE's CloudEvent source
-    bap-uri: ${OPENHIM_EMITTER_BECKN_SELF_BAP_URI:}
-    bpp-id: ${OPENHIM_EMITTER_BECKN_SELF_BPP_ID:}
-    bpp-uri: ${OPENHIM_EMITTER_BECKN_SELF_BPP_URI:}
-  cce:                                               # issued by CCE
-    bpp-id: ${OPENHIM_EMITTER_BECKN_CCE_BPP_ID:}
-    bpp-uri: ${OPENHIM_EMITTER_BECKN_CCE_BPP_URI:}
-    contract-id: ${OPENHIM_EMITTER_BECKN_CCE_CONTRACT_ID:}
-    transaction-id: ${OPENHIM_EMITTER_BECKN_CCE_TRANSACTION_ID:}
-    commitment-file: ${OPENHIM_EMITTER_BECKN_CCE_COMMITMENT_FILE:classpath:beckn/commitment-cce.json}  # copy of cce-beckn-service commitment.json
+  onix:                                              # this HIE's onix container
+    caller-url: ${OPENHIM_EMITTER_BECKN_ONIX_CALLER_URL:http://onix-openhim:8082/sygnal/caller}  # + /sygnal/event/report
+    timeout: ${OPENHIM_EMITTER_BECKN_ONIX_TIMEOUT_MS:20000}          # §8.3; below openhim-channel.timeout
+  self:                                              # the HIE's own Sygnal identity
+    id: ${OPENHIM_EMITTER_BECKN_SELF_ID:bap.openhim.nextsteps.mdtlabs.org}   # at most 100 characters; CCE's CloudEvent source
+    # context.networkId of every message. The registry checks that the sender is a member of it.
+    network-id: ${OPENHIM_EMITTER_BECKN_SELF_NETWORK_ID:sygnal.nextsteps.mdtlabs.org/sygnal_demo_network_registry}
+  cce:                                               # CCE's Sygnal identity
+    id: ${OPENHIM_EMITTER_BECKN_CCE_ID:bpp.cce.nextsteps.mdtlabs.org}       # context.receiverId
+    uri: ${OPENHIM_EMITTER_BECKN_CCE_URI:}                           # CCE's public receiver base, e.g. https://cce.example.org/sygnal/receiver
     retry:
       max-attempts: 1                                # no retry inside the route, §8.4
-  openhim-channel:                                   # where the unwrap endpoint posts the FHIR
+  openhim-channel:                                   # where the sygnal/event/report endpoint posts the FHIR
     url: ${OPENHIM_EMITTER_BECKN_OPENHIM_CHANNEL_URL:https://openhim-core:5001/cce-beckn}
     username: ${OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_ID:cce-beckn-endpoint}
     password: ${OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_PASSWORD:}
-    timeout: ${OPENHIM_EMITTER_BECKN_OPENHIM_CHANNEL_TIMEOUT_MS:35000}   # §8.3
-  # One entry per HMIS. Any non-blank contract id from the HMIS is accepted and echoed. Example:
+    timeout: ${OPENHIM_EMITTER_BECKN_OPENHIM_CHANNEL_TIMEOUT_MS:25000}   # §8.3; below onix's 30 s wait for this adaptor
+  # One entry per HMIS that may send sygnal/event/report (its context.senderId). Example:
   # subscribers:
-  #   - subscriber-id: bap.openmrs.example.org
-  #     subscriber-uri: https://openmrs.example.org/bap/receiver
-  #     commitment-file: classpath:beckn/commitment-hie-feed.json
+  #   - subscriber-id: bap.openmrs.nextsteps.mdtlabs.org
   #     source-system: openmrs-kicukiro           # a key under cce.emitter.sources, normally output: beckn
   subscribers: []
 

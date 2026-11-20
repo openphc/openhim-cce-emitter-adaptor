@@ -10,7 +10,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.openphc.cce.emitter.model.beckn.HttpAnswer;
 
-/** CCE's answer to an update, spec §5.4. */
+/** CCE's answer to a sygnal/event/report, spec §5.4. */
 class CceAnswerMapperTest {
 
     private final CceAnswerMapper mapper = new CceAnswerMapper(new ObjectMapper());
@@ -24,31 +24,32 @@ class CceAnswerMapperTest {
         return mapper.map(HttpAnswer.of(status, "application/json", body));
     }
 
-    @Test
-    @DisplayName("200 ACK → Accepted")
-    void ack() {
-        assertThat(map(200, "{\"message\":{\"status\":\"ACK\",\"messageId\":\"m\"}}"))
+    @ParameterizedTest
+    @ValueSource(ints = {200, 202})
+    @DisplayName("2xx ACK (new event or one CCE already has) → Accepted")
+    void ack(int status) {
+        assertThat(map(status, "{\"message\":{\"status\":\"ACK\",\"messageId\":\"m\"}}"))
                 .isInstanceOf(CceAnswerMapper.Accepted.class);
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"EVENT_REJECTED", "BAD_REQUEST", "NOT_SUPPORTED"})
+    @ValueSource(strings = {"BIZ_GENERIC_ERROR", "CTX_INVALID_FIELD", "SCH_SCHEMA_VALIDATION_FAILED"})
     @DisplayName("400 NACK → Refused with CCE's code and text")
     void refused(String code) {
         assertThat(map(400, nack(code, "the text"))).isEqualTo(new CceAnswerMapper.Refused(400, code, "the text"));
     }
 
     @Test
-    @DisplayName("400 without a Nack body (cce-onix schema check) → Refused BAD_REQUEST")
+    @DisplayName("400 without a Nack body → Refused BIZ_GENERIC_ERROR")
     void schemaRefusal() {
         CceAnswerMapper.Outcome o = map(400, "schema validation failed");
         assertThat(o).isInstanceOf(CceAnswerMapper.Refused.class);
-        assertThat(((CceAnswerMapper.Refused) o).code()).isEqualTo("BAD_REQUEST");
+        assertThat(((CceAnswerMapper.Refused) o).code()).isEqualTo("BIZ_GENERIC_ERROR");
         assertThat(((CceAnswerMapper.Refused) o).text()).contains("schema validation failed");
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"COLLECTOR_UNAVAILABLE", "INTERNAL_ERROR"})
+    @ValueSource(strings = {"NET_DOWNSTREAM_UNAVAILABLE", "NET_INTERNAL_ERROR"})
     @DisplayName("500 NACK → Failed")
     void serverNack(String code) {
         CceAnswerMapper.Outcome o = map(500, nack(code, "later"));
@@ -73,7 +74,7 @@ class CceAnswerMapperTest {
     @Test
     @DisplayName("2xx with a NACK body → Refused, or Failed for a code that may pass")
     void nackInside2xx() {
-        assertThat(map(200, nack("EVENT_REJECTED", "x"))).isInstanceOf(CceAnswerMapper.Refused.class);
-        assertThat(map(200, nack("COLLECTOR_UNAVAILABLE", "x"))).isInstanceOf(CceAnswerMapper.Failed.class);
+        assertThat(map(200, nack("BIZ_GENERIC_ERROR", "x"))).isInstanceOf(CceAnswerMapper.Refused.class);
+        assertThat(map(200, nack("NET_DOWNSTREAM_UNAVAILABLE", "x"))).isInstanceOf(CceAnswerMapper.Failed.class);
     }
 }

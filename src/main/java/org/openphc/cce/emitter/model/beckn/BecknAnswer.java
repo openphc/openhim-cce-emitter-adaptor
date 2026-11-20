@@ -3,12 +3,13 @@ package org.openphc.cce.emitter.model.beckn;
 import org.springframework.http.HttpStatus;
 
 /**
- * What a Beckn endpoint answers: {@code Ack} (200) or {@code Nack} with a code, HTTP status and text.
+ * What the {@code sygnal/event/report} endpoint answers: {@code Ack} (202) or {@code Nack} with a
+ * code, HTTP status and text.
  */
 public record BecknAnswer(HttpStatus status, String code, String text) {
 
     public static BecknAnswer ack() {
-        return new BecknAnswer(HttpStatus.OK, null, null);
+        return new BecknAnswer(HttpStatus.ACCEPTED, null, null);
     }
 
     public static BecknAnswer nack(HttpStatus status, String code, String text) {

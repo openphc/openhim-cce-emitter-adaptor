@@ -18,10 +18,12 @@ import org.springframework.stereotype.Component;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * Resolves the source system for an inbound request and transforms
@@ -53,6 +55,12 @@ public class SourceAdaptorService {
     private static final String HEADER_FACILITY_ID = "x-facility-id";
     private static final String HEADER_SOURCE_EVENT_ID = "x-source-event-id";
     private static final String HEADER_CORRELATION_ID = "x-correlation-id";
+    private static final String HEADER_SYGNAL_EVENT_ID = "x-sygnal-event-id";
+    private static final String HEADER_SYGNAL_OCCURRED_AT = "x-sygnal-occurred-at";
+
+    // UUID.fromString() accepts short forms such as "1-1-1-1-1"; the Sygnal event id is a full UUID.
+    private static final Pattern UUID_FORM =
+            Pattern.compile("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
     private final Map<String, SourceProperties> sources;
     private final FhirResourceParser fhirResourceParser;
@@ -194,6 +202,10 @@ public class SourceAdaptorService {
      *   <li>{@code X-Correlation-Id} — explicit correlation header from the source system</li>
      *   <li>Generated UUID — fallback when neither header is present</li>
      * </ol>
+     *
+     * <p>An event that came in over Sygnal also carries {@code X-Sygnal-Event-Id} (kept as the
+     * CloudEvent {@code id}, when it is a UUID) and {@code X-Sygnal-Occurred-At} (the CloudEvent
+     * {@code time}, when it parses; otherwise the time of receipt).
      */
     SourceMetadata buildSourceMetadata(InboundRequest request, String sourceKey, IBaseResource resource) {
         String facilityId = request.getHeader(HEADER_FACILITY_ID).orElse(null);
@@ -211,13 +223,31 @@ public class SourceAdaptorService {
                 .or(() -> request.getHeader(HEADER_CORRELATION_ID))
                 .orElseGet(() -> UUID.randomUUID().toString());
 
+        String eventId = request.getHeader(HEADER_SYGNAL_EVENT_ID)
+                .map(String::strip)
+                .filter(id -> UUID_FORM.matcher(id).matches())
+                .orElse(null);
+        OffsetDateTime eventTime = request.getHeader(HEADER_SYGNAL_OCCURRED_AT)
+                .flatMap(SourceAdaptorService::parseTime)
+                .orElseGet(() -> OffsetDateTime.now(ZoneOffset.UTC));
+
         return new SourceMetadata(
                 sourceKey,
                 facilityId,
                 sourceEventId,
                 correlationId,
-                OffsetDateTime.now(ZoneOffset.UTC),
-                request.getPath()
+                eventTime,
+                request.getPath(),
+                eventId
         );
+    }
+
+    private static Optional<OffsetDateTime> parseTime(String value) {
+        try {
+            return Optional.of(OffsetDateTime.parse(value.strip()));
+        } catch (DateTimeParseException e) {
+            log.warn("X-Sygnal-Occurred-At '{}' is not an ISO-8601 time; using the time of receipt", value);
+            return Optional.empty();
+        }
     }
 }

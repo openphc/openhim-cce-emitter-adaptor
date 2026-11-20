@@ -6,8 +6,8 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.databind.JsonNode;
 
 /**
- * The {@code CceClinicalEvent} box: {@code performance[0].performanceAttributes} of an
- * {@code update} (schema in {@code cce-beckn-service}'s {@code schema/CceClinicalEvent/v1.0}).
+ * The {@code CceClinicalEvent} box: {@code message.events[0].eventAttributes} of a
+ * {@code sygnal/event/report} (schema in {@code cce-beckn-service}'s {@code schema/CceClinicalEvent/v1.0}).
  * Optional fields are left out when null.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)

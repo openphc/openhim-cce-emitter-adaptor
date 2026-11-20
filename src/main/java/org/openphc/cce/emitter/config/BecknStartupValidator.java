@@ -7,11 +7,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
 
 /**
@@ -24,19 +21,22 @@ public class BecknStartupValidator {
 
     private static final Logger log = LoggerFactory.getLogger(BecknStartupValidator.class);
 
-    static final int MAX_BAP_ID = 100;
+    /** {@code beckn.self.id} becomes CCE's CloudEvent {@code source}, which holds at most 100 characters. */
+    static final int MAX_SELF_ID = 100;
 
-    public BecknStartupValidator(BecknProperties beckn, EmitterProperties emitter,
-                                 ResourceLoader resourceLoader, ObjectMapper mapper) {
+    /** onix waits this long for this adaptor's answer ({@code responseHeaderTimeout} of the receiver). */
+    static final int ONIX_RECEIVER_WAIT_MS = 30000;
+
+    public BecknStartupValidator(BecknProperties beckn, EmitterProperties emitter) {
         List<String> warnings = new ArrayList<>();
-        List<String> errors = validate(beckn, emitter, resourceLoader, mapper, warnings);
-        warnings.forEach(w -> log.warn("Beckn settings: {}", w));
+        List<String> errors = validate(beckn, emitter, warnings);
+        warnings.forEach(w -> log.warn("Sygnal settings: {}", w));
         if (!errors.isEmpty()) {
-            throw new IllegalStateException("Invalid Beckn settings: " + String.join("; ", errors));
+            throw new IllegalStateException("Invalid Sygnal settings: " + String.join("; ", errors));
         }
         if (beckn.enabled()) {
-            log.info("Beckn enabled: {} subscriber(s), bapId='{}', CCE bppId='{}'",
-                    beckn.subscribers().size(), beckn.self().bapId(), beckn.cce().bppId());
+            log.info("Sygnal enabled: {} subscriber(s), self id='{}', CCE id='{}'",
+                    beckn.subscribers().size(), beckn.self().id(), beckn.cce().id());
         }
     }
 
@@ -46,8 +46,7 @@ public class BecknStartupValidator {
      * @param warnings collects the warnings (allowed, logged)
      * @return the errors; empty when the settings are fine
      */
-    public static List<String> validate(BecknProperties beckn, EmitterProperties emitter,
-                                        ResourceLoader resourceLoader, ObjectMapper mapper, List<String> warnings) {
+    public static List<String> validate(BecknProperties beckn, EmitterProperties emitter, List<String> warnings) {
         List<String> errors = new ArrayList<>();
         Map<String, EmitterProperties.SourceProperties> sources =
                 emitter.sources() != null ? emitter.sources() : Map.of();
@@ -62,35 +61,43 @@ public class BecknStartupValidator {
         }
 
         // Required settings
-        require(errors, beckn.onix().bapCallerUrl(), "beckn.onix.bap-caller-url");
-        require(errors, beckn.onix().bppCallerUrl(), "beckn.onix.bpp-caller-url");
-        require(errors, beckn.self().bapId(), "beckn.self.bap-id");
-        require(errors, beckn.self().bapUri(), "beckn.self.bap-uri");
-        require(errors, beckn.self().bppId(), "beckn.self.bpp-id");
-        require(errors, beckn.self().bppUri(), "beckn.self.bpp-uri");
-        require(errors, beckn.cce().bppId(), "beckn.cce.bpp-id");
-        require(errors, beckn.cce().bppUri(), "beckn.cce.bpp-uri");
-        require(errors, beckn.cce().contractId(), "beckn.cce.contract-id");
-        require(errors, beckn.cce().transactionId(), "beckn.cce.transaction-id");
+        require(errors, beckn.onix().callerUrl(), "beckn.onix.caller-url");
+        require(errors, beckn.self().id(), "beckn.self.id");
+        require(errors, beckn.self().networkId(), "beckn.self.network-id");
+        require(errors, beckn.cce().id(), "beckn.cce.id");
+        require(errors, beckn.cce().uri(), "beckn.cce.uri");
         require(errors, beckn.openhimChannel().url(), "beckn.openhim-channel.url");
         require(errors, beckn.openhimChannel().username(), "beckn.openhim-channel.username");
         if (beckn.cce().retry().maxAttempts() < 1) {
             errors.add("beckn.cce.retry.max-attempts must be at least 1");
         }
 
-        // bapId becomes CCE's CloudEvent source, at most 100 characters
-        String bapId = beckn.self().bapId();
-        if (bapId != null && bapId.length() > MAX_BAP_ID) {
-            errors.add("beckn.self.bap-id is longer than " + MAX_BAP_ID + " characters; CCE would refuse every update");
+        // self.id becomes CCE's CloudEvent source, at most 100 characters
+        String selfId = beckn.self().id();
+        if (selfId != null && selfId.length() > MAX_SELF_ID) {
+            errors.add("beckn.self.id is longer than " + MAX_SELF_ID + " characters; CCE would refuse every report");
         }
 
-        // The unwrap endpoint's OpenHIM client must not be a source's client id (spec §3.2)
+        // Each hop must give up before the hop around it (§8.3)
+        int channelTimeout = beckn.openhimChannel().timeout();
+        long cceBudget = (long) Math.max(1, beckn.cce().retry().maxAttempts()) * beckn.onix().timeout();
+        if (cceBudget >= channelTimeout) {
+            warnings.add("beckn.onix.timeout x beckn.cce.retry.max-attempts (" + cceBudget
+                    + " ms) is not below beckn.openhim-channel.timeout (" + channelTimeout
+                    + " ms); the HMIS may get NET_DOWNSTREAM_UNAVAILABLE for an event CCE took");
+        }
+        if (channelTimeout >= ONIX_RECEIVER_WAIT_MS) {
+            warnings.add("beckn.openhim-channel.timeout (" + channelTimeout + " ms) is not below the "
+                    + ONIX_RECEIVER_WAIT_MS + " ms onix waits for this adaptor's answer");
+        }
+
+        // The endpoint's OpenHIM client must not be a source's client id (spec §3.2)
         String channelClient = beckn.openhimChannel().username();
         if (channelClient != null && !channelClient.isBlank()) {
             sources.forEach((key, source) -> {
                 if (channelClient.equals(source.clientId())) {
                     errors.add("beckn.openhim-channel.username '" + channelClient + "' is the client-id of source '"
-                            + key + "'; X-OpenHIM-ClientID would credit every Beckn event to that source");
+                            + key + "'; X-OpenHIM-ClientID would credit every Sygnal event to that source");
                 }
             });
         }
@@ -101,7 +108,6 @@ public class BecknStartupValidator {
             BecknProperties.Subscriber s = beckn.subscribers().get(i);
             String name = "beckn.subscribers[" + i + "]";
             require(errors, s.subscriberId(), name + ".subscriber-id");
-            require(errors, s.subscriberUri(), name + ".subscriber-uri");
             require(errors, s.sourceSystem(), name + ".source-system");
             if (s.subscriberId() != null && !ids.add(s.subscriberId())) {
                 errors.add(name + ".subscriber-id '" + s.subscriberId() + "' is listed twice");
@@ -117,24 +123,13 @@ public class BecknStartupValidator {
                             + "' with output: collector; its events go to the CCE Collector directly");
                 }
             }
-            checkFile(errors, resourceLoader, mapper, BecknCommitments.subscriberFile(s));
         }
-
-        checkFile(errors, resourceLoader, mapper, beckn.cce().commitmentFile());
         return errors;
     }
 
     private static void require(List<String> errors, String value, String name) {
         if (value == null || value.isBlank()) {
             errors.add(name + " is not set");
-        }
-    }
-
-    private static void checkFile(List<String> errors, ResourceLoader loader, ObjectMapper mapper, String location) {
-        try {
-            BecknCommitments.read(loader, mapper, location);
-        } catch (IllegalStateException e) {
-            errors.add(e.getMessage());
         }
     }
 }

@@ -312,22 +312,22 @@ Docker marks the container as `unhealthy` after 3 consecutive failures. Containe
 
 ## 8. Beckn Metrics and Alerts (Proposal)
 
-> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). The metrics and alerts in §1–§7 are unchanged. With `beckn.enabled=false` (default) the metrics below are not registered.
+> **Status:** Built on branch `sygnal-actions`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). The metrics and alerts in §1–§7 are unchanged. With `beckn.enabled=false` the metrics below are not registered. The feature is called Sygnal; the metric names keep `beckn`.
 
-On the Beckn output, the existing metrics keep their meaning: CCE's `ACK` counts as `cce_emitter_events_forwarded_total`, a 400 `NACK` (`EVENT_REJECTED`, `BAD_REQUEST`, `NOT_SUPPORTED`) as `cce_emitter_events_rejected_total`, and an answer that may pass (500 `COLLECTOR_UNAVAILABLE` or `INTERNAL_ERROR`, 408, 429, timeout) as `cce_emitter_collector_retries_total`. A `DUPLICATE` from CCE's `on_update` counts as `cce_emitter_events_duplicate_total`. CCE sends `on_update` once and it may be lost, so this count can be low; it is a hint, not a total. So the alerts in §3 also cover the Beckn output. Note that `cce_emitter_events_received_total` tags all Beckn traffic with the unwrap endpoint's OpenHIM client id.
+On the Sygnal output, the existing metrics keep their meaning: CCE's `ACK` counts as `cce_emitter_events_forwarded_total`, a refusal (4xx `NACK`: `BIZ_GENERIC_ERROR`, `CTX_*`, `SCH_*`) as `cce_emitter_events_rejected_total` (`source="beckn"`, `reason="client_error"`), and an answer that may pass (`NET_DOWNSTREAM_UNAVAILABLE` or `NET_INTERNAL_ERROR`, 408, 429, 5xx, timeout) as `cce_emitter_collector_retries_total`. So the alerts in §3 also cover the Sygnal output. `cce_emitter_events_duplicate_total` is not counted for Sygnal: CCE answers `202 ACK` for a new and for a duplicate event alike, and there is no callback. Note that `cce_emitter_events_received_total` tags all Sygnal traffic with the Sygnal endpoint's OpenHIM client id.
 
 ### 8.1 New Metrics
 
 | Metric | Type | Tags | Description |
 |--------|------|------|-------------|
-| `cce_emitter_beckn_received_total` | Counter | `endpoint` (`bpp`, `bap`), `action` | Beckn messages received |
-| `cce_emitter_beckn_answered_total` | Counter | `endpoint`, `action`, `result` (`ack`, `nack`, `error`), `code` (`BAD_REQUEST`, `NOT_SUPPORTED`, `EVENT_REJECTED`, `UNAVAILABLE`, `HIE_ERROR`; `none` on `ack`) | Beckn messages answered |
-| `cce_emitter_beckn_channel_ignored_total` | Counter | `subscriber`, `status` (`ignored`, `skipped`) | OpenHIM channel answered 200 without forwarding. Each one becomes a `Nack` to the HMIS |
-| `cce_emitter_beckn_channel_latency_seconds` | Timer | — | Unwrap endpoint → OpenHIM channel → answer. Includes the whole inner route |
-| `cce_emitter_beckn_onupdate_sent_total` | Counter | `subscriber`, `result` (`ok`, `failed`) | `on_update` sent to an HMIS |
-| `cce_emitter_beckn_cce_update_sent_total` | Counter | `source`, `result` (`ack`, `nack`, `error`), `code` (CCE's `NACK` code) | `update` sent to CCE |
-| `cce_emitter_beckn_cce_onupdate_received_total` | Counter | `status` (`ACCEPTED`, `DUPLICATE`) | CCE's `on_update` |
-| `cce_emitter_beckn_onix_latency_seconds` | Timer | `container` (`bap`, `bpp`), `action` | Round trip to `onix-bap` / `onix-bpp` |
+| `cce_emitter_beckn_received_total` | Counter | `action` (`sygnal/event/report`) | Sygnal messages received on `/sygnal/event/report` |
+| `cce_emitter_beckn_answered_total` | Counter | `action`, `result` (`ack`; `nack` for a 4xx `Nack`; `error` for a 5xx `Nack`), `code` (`CTX_MISSING_FIELD`, `CTX_INVALID_FIELD`, `CTX_ACTION_MISMATCH`, `SCH_INVALID_JSON`, `SCH_REQUIRED_FIELD_MISSING`, `SCH_SCHEMA_VALIDATION_FAILED`, `SCH_TYPE_NOT_SUPPORTED`, `BIZ_GENERIC_ERROR`, `NET_DOWNSTREAM_UNAVAILABLE`, `NET_INTERNAL_ERROR`; `none` on `ack`) | Sygnal messages answered |
+| `cce_emitter_beckn_channel_ignored_total` | Counter | `subscriber`, `status` (`ignored`, `skipped`) | OpenHIM channel answered 2xx without forwarding. Each one becomes a `Nack` 400 `BIZ_GENERIC_ERROR` to the HMIS |
+| `cce_emitter_beckn_channel_latency_seconds` | Timer | — | Sygnal endpoint → OpenHIM channel → answer. Includes the whole inner route, up to CCE's answer |
+| `cce_emitter_beckn_cce_report_sent_total` | Counter | `source`, `result` (`ack`, `nack`, `error`), `code` (CCE's `NACK` code; `none` when there is none) | `sygnal/event/report` sent to CCE. Was `cce_emitter_beckn_cce_update_sent_total` |
+| `cce_emitter_beckn_onix_latency_seconds` | Timer | `action` (`sygnal/event/report`) | Round trip to `onix-openhim`'s caller |
+
+Removed with the switch to Sygnal: `cce_emitter_beckn_onupdate_sent_total`, `cce_emitter_beckn_cce_onupdate_received_total` (there are no callbacks), the `endpoint` tag on `received` / `answered`, and the `container` tag on `onix_latency`. Dashboards and alerts that used them must be changed as below.
 
 ### 8.2 Alert Rules
 
@@ -343,75 +343,77 @@ On the Beckn output, the existing metrics keep their meaning: CCE's `ACK` counts
           severity: warning
           service: cce-emitter-adaptor
         annotations:
-          summary: "Beckn events answered 'ignored' or 'skipped' by the OpenHIM channel"
-          description: "The HMIS got a Nack. With status=ignored the subscriber's source-system matches no source, or the unwrap client id matches a source's client-id."
+          summary: "Sygnal events answered 'ignored' or 'skipped' by the OpenHIM channel"
+          description: "The HMIS got a Nack 400 BIZ_GENERIC_ERROR. With status=ignored the subscriber's source-system matches no source, or the Sygnal endpoint's client id matches a source's client-id."
           runbook: "Check beckn.subscribers[].source-system against cce.emitter.sources, and the facility filter for status=skipped."
 
-      # CCE unreachable over Beckn
+      # CCE unreachable over Sygnal
       - alert: CceEmitterBecknCceErrors
-        expr: rate(cce_emitter_beckn_cce_update_sent_total{result="error"}[5m]) > 0
+        expr: rate(cce_emitter_beckn_cce_report_sent_total{result="error"}[5m]) > 0
         for: 2m
         labels:
           severity: critical
           service: cce-emitter-adaptor
         annotations:
-          summary: "update to CCE failing (500, 408, 429 or timeout)"
-          description: "onix-bap, cce-onix, cce-beckn-service or the CCE collector is down or slow (CCE code COLLECTOR_UNAVAILABLE or INTERNAL_ERROR). HMIS systems get Nack 500 UNAVAILABLE and should resend with a growing wait."
-          runbook: "Check openhim-onix (bap) logs, then the CCE side. Check the timeout budget: CCE's Ack can take 17 s, and the onix responseHeaderTimeout default of 5 s is too short."
+          summary: "sygnal/event/report to CCE failing (5xx, 408, 429 or timeout)"
+          description: "onix-openhim, onix-cce, cce-beckn-service or the CCE collector is down or slow (CCE code NET_DOWNSTREAM_UNAVAILABLE or NET_INTERNAL_ERROR). HMIS systems get Nack 500 NET_DOWNSTREAM_UNAVAILABLE and should resend with a growing wait."
+          runbook: "Check onix-openhim logs, then the CCE side. Check the timeout budget: CCE's Ack can take 17 s, and the onix responseHeaderTimeout default of 5 s is too short."
+
+      # CCE refuses the HIE's own context: HIE settings wrong
+      - alert: CceEmitterBecknHieContextRefused
+        expr: increase(cce_emitter_beckn_cce_report_sent_total{result="nack",code=~"CTX_.*"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: cce-emitter-adaptor
+        annotations:
+          summary: "CCE refuses the HIE's sygnal/event/report context"
+          description: "HMIS systems get Nack 500 NET_INTERNAL_ERROR and will resend, but every resend fails the same way."
+          runbook: "Check beckn.self.id, beckn.self.network-id, beckn.cce.id and beckn.cce.uri against CCE's settings and the registry."
 
       # Many Nacks to HMIS systems
       - alert: CceEmitterBecknHighNackRate
-        expr: sum(rate(cce_emitter_beckn_answered_total{endpoint="bpp",result="nack"}[5m])) / sum(rate(cce_emitter_beckn_received_total{endpoint="bpp"}[5m])) > 0.05
+        expr: sum(rate(cce_emitter_beckn_answered_total{result=~"nack|error"}[5m])) / sum(rate(cce_emitter_beckn_received_total[5m])) > 0.05
         for: 5m
         labels:
           severity: warning
           service: cce-emitter-adaptor
         annotations:
-          summary: "More than 5% of Beckn updates answered Nack"
-          description: "Group by code: BAD_REQUEST (unknown subscriber or contract, not exactly one entry, or CCE found a broken rule), EVENT_REJECTED (ignored, skipped, a pipeline 4xx, or CCE refused the event)."
+          summary: "More than 5% of Sygnal event reports answered Nack"
+          description: "Group by code: CTX_* / SCH_* (the HMIS's message broke a rule: unknown subscriber, wrong receiverId, not exactly one event, id not a UUID), BIZ_GENERIC_ERROR (ignored, skipped, a pipeline 4xx, or CCE refused the event), NET_DOWNSTREAM_UNAVAILABLE (OpenHIM or CCE down or slow), NET_INTERNAL_ERROR (HIE settings or OpenHIM client wrong)."
 
       # onix close to its timeout
       - alert: CceEmitterBecknOnixSlow
-        expr: histogram_quantile(0.95, rate(cce_emitter_beckn_onix_latency_seconds_bucket{container="bap"}[5m])) > 0.8 * 25
+        expr: histogram_quantile(0.95, rate(cce_emitter_beckn_onix_latency_seconds_bucket{action="sygnal/event/report"}[5m])) > 0.8 * 20
         for: 5m
         labels:
           severity: warning
           service: cce-emitter-adaptor
         annotations:
-          summary: "onix-bap p95 close to the Beckn timeout"
+          summary: "onix-openhim p95 close to the Sygnal timeout (beckn.onix.timeout, 20 s)"
           description: "Outer hops may give up first and the HMIS will resend."
-
-      # on_update to HMIS failing
-      - alert: CceEmitterBecknOnUpdateFailing
-        expr: rate(cce_emitter_beckn_onupdate_sent_total{result="failed"}[10m]) > 0
-        for: 10m
-        labels:
-          severity: info
-          service: cce-emitter-adaptor
-        annotations:
-          summary: "on_update to an HMIS failing"
-          description: "The HMIS already got its Ack; only the callback is lost. Check openhim-onix (bpp)."
 ```
 
 ### 8.3 Dashboard and Logs
 
 | Panel | Query |
 |-------|-------|
-| Beckn answers by result | `sum by (result) (rate(cce_emitter_beckn_answered_total{endpoint="bpp"}[5m]))` |
+| Sygnal answers by result | `sum by (result, code) (rate(cce_emitter_beckn_answered_total[5m]))` |
 | Ignored / skipped by subscriber | `sum by (subscriber, status) (increase(cce_emitter_beckn_channel_ignored_total[1h]))` |
-| `update` to CCE by result | `sum by (result, code) (rate(cce_emitter_beckn_cce_update_sent_total[5m]))` |
+| `sygnal/event/report` to CCE by result | `sum by (result, code) (rate(cce_emitter_beckn_cce_report_sent_total[5m]))` |
 | onix latency p95 | `histogram_quantile(0.95, rate(cce_emitter_beckn_onix_latency_seconds_bucket[5m]))` |
-| HTTP on Beckn endpoints | `rate(http_server_requests_seconds_count{uri=~"/beckn/.*"}[5m])` |
+| HTTP on the Sygnal endpoint | `rate(http_server_requests_seconds_count{uri="/sygnal/event/report"}[5m])` |
 
 | Log query | Filter |
 |-----------|--------|
-| Trace one Beckn message | `becknMessageId: "<context.messageId>"`. CCE's `on_update` has the `messageId` of this adaptor's `update`. To ask the CCE team about a refusal, give them that `messageId` and the `transactionId` |
-| All messages of one HMIS | `subscriber: "bap.openmrs.example.org"` |
-| Nacks | `logger: *"Beckn"* AND message: *"Nack"*` |
+| Trace one Sygnal message | `becknMessageId: "<context.messageId>"` (`becknAction` is `sygnal/event/report`). The outbound `sygnal/event/report` to CCE has its own `messageId` but the same event id. To ask the CCE team about a refusal, give them the event id, that `messageId` and the `transactionId` |
+| All messages of one HMIS | `subscriber: "bap.openmrs.nextsteps.mdtlabs.org"` (the `senderId`) |
+| Nacks | `message: *"Sygnal sygnal/event/report"* AND message: *"Nack"*` |
 
 | Metric | Warning | Critical |
 |--------|---------|----------|
 | Channel "ignored" / "skipped" | Any in 10 minutes | — |
-| `update` to CCE errors | — | Any sustained rate for 2 minutes |
-| Nack rate on `/beckn/bpp-webhook` | >5% for 5 minutes | >20% for 5 minutes |
-| onix-bap latency p95 | >80% of `beckn.onix.timeout` (25 s). CCE's `Ack` alone can take 17 s | — |
+| `sygnal/event/report` to CCE errors | — | Any sustained rate for 2 minutes |
+| CCE refuses the HIE's context (`CTX_*`) | — | Any in 10 minutes |
+| Nack rate on `/sygnal/event/report` | >5% for 5 minutes | >20% for 5 minutes |
+| onix-openhim latency p95 | >80% of `beckn.onix.timeout` (20 s). CCE's `Ack` alone can take 17 s | — |

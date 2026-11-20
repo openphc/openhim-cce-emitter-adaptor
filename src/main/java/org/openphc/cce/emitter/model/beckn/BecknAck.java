@@ -13,7 +13,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * { "message": { "status": "ACK", "messageId": "…" } }
  * { "message": { "status": "NACK", "messageId": "…", "error": { "code": "…", "message": "…" } } }
  * </pre>
- * Written by both Beckn endpoints of this adaptor and read from CCE's answer.
+ * Written by the {@code sygnal/event/report} endpoint of this adaptor and read from CCE's answer.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = true)

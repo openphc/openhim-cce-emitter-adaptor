@@ -21,20 +21,22 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 /**
- * The Beckn output (spec §5): wraps a CloudEvent in the {@code CceClinicalEvent} box, sends it to
- * CCE as an {@code update} through {@code onix-bap}, and maps CCE's answer to what the collector
- * path gives {@link InboundEventService} (spec §5.4), so {@code /inbound}'s answer, the OpenHIM
- * transaction and the existing metrics behave the same:
+ * The Sygnal output (spec §5): wraps a CloudEvent in the {@code CceClinicalEvent} box, sends it to
+ * CCE as a {@code sygnal/event/report} through {@code onix-openhim}, and maps CCE's answer to what
+ * the collector path gives {@link InboundEventService} (spec §5.4), so {@code /inbound}'s answer,
+ * the OpenHIM transaction and the existing metrics behave the same:
  *
  * <ul>
- *   <li>{@code ACK} → a {@link CollectorResponse} with status {@code accepted}</li>
- *   <li>{@code NACK} 400 (any code) → {@link CollectorClientException} (400), message
+ *   <li>{@code ACK} (CCE took the event, or already had it) → a {@link CollectorResponse} with
+ *       status {@code accepted}</li>
+ *   <li>{@code NACK} 4xx (any code) → {@link CollectorClientException} (400), message
  *       {@code CCE <code>: <text>}. Not retried</li>
  *   <li>5xx, 408, 429, timeout, no answer → {@link CollectorForwardingException} (502)</li>
  * </ul>
  *
- * Tries {@code beckn.cce.retry.max-attempts} times (default 1, no retry, spec §8.4), each with a
- * new {@code messageId}.
+ * The report's event id is the CloudEvent {@code id}, which for an event that came in over Sygnal
+ * is the HMIS's own event id. Tries {@code beckn.cce.retry.max-attempts} times (default 1, no
+ * retry, spec §8.4), each with a new {@code messageId} and the same {@code transactionId}.
  */
 @Service
 @ConditionalOnProperty(prefix = "beckn", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -72,20 +74,22 @@ public class BecknForwardingService {
     }
 
     /**
-     * Sends the CloudEvent to CCE as an {@code update}.
+     * Sends the CloudEvent to CCE as a {@code sygnal/event/report}.
      *
      * @return a collector-shaped {@code accepted} response on CCE's {@code ACK}
-     * @throws CollectorClientException     when CCE refused the {@code update} (400)
+     * @throws CollectorClientException     when CCE refused the report (4xx)
      * @throws CollectorForwardingException when CCE gave no answer, or one that may pass
      */
     public CollectorResponse forward(CloudEventDto event) {
         int maxAttempts = Math.max(1, props.cce().retry().maxAttempts());
         CceAnswerMapper.Failed lastFailure = null;
+        String transactionId = BecknMessageFactory.newId();
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            String messageId = BecknMessageFactory.newMessageId();
-            ObjectNode update = messages.update(messageId, event.getId(), boxMapper.toBox(event));
+            String messageId = BecknMessageFactory.newId();
+            ObjectNode report = messages.eventReport(transactionId, messageId, event.getId(), event.getTime(),
+                    boxMapper.toBox(event));
             long started = System.nanoTime();
-            HttpAnswer answer = onix.postToBap("update", update);
+            HttpAnswer answer = onix.post(BecknMessageFactory.EVENT_REPORT, report);
             long tookMs = (System.nanoTime() - started) / 1_000_000;
             CceAnswerMapper.Outcome outcome = answerMapper.map(answer);
 
@@ -112,13 +116,13 @@ public class BecknForwardingService {
             }
         }
         retriesCounter.increment();
-        throw new CollectorForwardingException("CCE over Beckn unavailable after " + maxAttempts + " attempt(s): "
+        throw new CollectorForwardingException("CCE over Sygnal unavailable after " + maxAttempts + " attempt(s): "
                 + (lastFailure != null ? lastFailure.reason() : "no answer"));
     }
 
     private void count(CloudEventDto event, String result, String code) {
-        Counter.builder("cce.emitter.beckn.cce.update.sent")
-                .description("update sent to CCE")
+        Counter.builder("cce.emitter.beckn.cce.report.sent")
+                .description("sygnal/event/report sent to CCE")
                 .tag("source", event.getSource() != null ? event.getSource() : "unknown")
                 .tag("result", result)
                 .tag("code", code)
