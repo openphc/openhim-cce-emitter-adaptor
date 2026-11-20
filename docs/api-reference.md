@@ -9,7 +9,7 @@
 | **Content Type** | `application/json` |
 | **Response Format** | `application/json+openhim` (mediator response envelope) |
 
-> **Beckn:** two more endpoints, `/beckn/bpp-webhook/{action}` and `/beckn/bap-webhook/{action}`, exist only with `beckn.enabled=true` (default `false`). See §8. `/inbound` is unchanged.
+> **Sygnal:** one more endpoint, `POST /sygnal/event/report`, exists only with `beckn.enabled=true` (the default on this branch). See §8. `/inbound` is unchanged.
 
 ## 2. Inbound Event Endpoint
 
@@ -38,6 +38,8 @@ POST /inbound
 | `X-Source-System` | No | Source system identifier (e.g., `ebuzima`). Fallback when `X-OpenHIM-ClientID` is absent. |
 | `X-Facility-Id` | No | Facility FOSA ID |
 | `X-Source-Event-Id` | No | Source system's original event ID |
+| `X-Sygnal-Event-Id` | No | Set by the Sygnal endpoint (§8.1): the HMIS's event id. Used as the CloudEvent `id` when it is a full UUID, else ignored |
+| `X-Sygnal-Occurred-At` | No | Set by the Sygnal endpoint (§8.1): when the clinical event happened. Used as the CloudEvent `time` when it parses as an ISO-8601 offset date-time, else the time of receipt |
 | `X-OpenHIM-TransactionID` | No | OpenHIM transaction ID. **Highest priority** source for CloudEvent `correlationid` — preferred over `X-Correlation-Id`. Automatically set by OpenHIM Core on every routed request. |
 | `X-Correlation-Id` | No | Trace correlation ID. Used as `correlationid` if `X-OpenHIM-TransactionID` is absent. If both are absent, adaptor generates a UUID. |
 
@@ -406,13 +408,13 @@ Content-Type: application/json
 
 ---
 
-## 8. Beckn Endpoints and Calls (Proposal)
+## 8. Sygnal Endpoint and Call (Proposal)
 
-> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md).
+> **Status:** Built on branch `sygnal-actions`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). The settings keep the `beckn.*` prefix.
 
-These exist only with `beckn.enabled=true`. `/inbound` and the collector call in §7 are unchanged; a source keeps the collector output unless it is set to `output: beckn`.
+These exist only with `beckn.enabled=true`. `/inbound` and the collector call in §7 are unchanged; a source without an explicit `output` follows `beckn.enabled` (Sygnal when it is on), and `output: collector` keeps the collector.
 
-Both endpoints are called by the HIE's Beckn adapter (`openhim-onix`), which has already checked the Beckn signature and schema and appends the action name to the path. No token is checked, as for `/inbound`. Answers use the body shape of `cce-beckn-service`, with the request's `messageId`:
+Both hops use one Sygnal action, `sygnal/event/report`: the HMIS sends it to the HIE (§8.1), and the HIE sends it on to CCE (§8.2). There are no callbacks (no `on_update`, `on_status` or `on_report`): the synchronous HTTP answer is the whole result. The endpoint is called by the HIE's onix container (`onix-openhim`), which has already checked the signature and the schema and uses the action as the path. No token is checked, as for `/inbound`. Answers use the body shape of `cce-beckn-service`:
 
 ```json
 { "message": { "status": "ACK", "messageId": "<request messageId>" } }
@@ -423,25 +425,65 @@ Both endpoints are called by the HIE's Beckn adapter (`openhim-onix`), which has
                "error": { "code": "<CODE>", "message": "<text>" } } }
 ```
 
+`messageId` is the request's when it is a UUID, else a new UUID. The codes are from the canonical Beckn list:
+
 | Code | HTTP | When |
 |------|------|------|
-| — (`ACK`) | 200 | Success |
-| `BAD_REQUEST` | 400 | A rule is broken in the HMIS's message: unknown subscriber or contract, not exactly one `performance` entry, a missing field |
-| `NOT_SUPPORTED` | 400 | An action this endpoint does not take |
-| `EVENT_REJECTED` | 400 | The pipeline refused the event (`ignored`, `skipped`, no patient, bad FHIR), or CCE answered `EVENT_REJECTED` (CCE's text) |
-| `UNAVAILABLE` | 500 | Something that may pass: OpenHIM, the collector, CCE or onix down or slow. Send again later with the same performance id |
-| `HIE_ERROR` | 500 | A fault in the HIE: CCE answered `BAD_REQUEST` or `NOT_SUPPORTED` to this adaptor's own `update`, or OpenHIM refused this adaptor's client (401, 403, 404). Send again later; the HIE team must fix it |
+| — (`ACK`) | 202 | CCE has the event (new, or one it already had) |
+| `CTX_ACTION_MISMATCH` | 400 | `context.action` is not `sygnal/event/report` |
+| `CTX_MISSING_FIELD` | 400 | `context.senderId`, `context.receiverId` or `context.messageId` is missing |
+| `CTX_INVALID_FIELD` | 400 | `context.senderId` is not a configured subscriber (`beckn.subscribers[].subscriber-id`), or `context.receiverId` is not `beckn.self.id` |
+| `SCH_INVALID_JSON` | 400 | The body is not JSON. A 4xx Spring refuses before the check (for example 415 when the `Content-Type` is not JSON) keeps its status, with this code |
+| `SCH_REQUIRED_FIELD_MISSING` | 400 | `events[0].id` is missing |
+| `SCH_SCHEMA_VALIDATION_FAILED` | 400 | Not exactly one event; `events[0].id` not a full UUID; `revision` present and not 1; `from.id` present and not `context.senderId`; `occurredAt` (or `context.timestamp` when there is none) not ISO-8601; `eventAttributes.resource` not an object with a `resourceType` |
+| `SCH_TYPE_NOT_SUPPORTED` | 400 | `eventAttributes.@type` is not `cce:CceClinicalEvent` |
+| `BIZ_GENERIC_ERROR` | 400 | The pipeline refused the event (`ignored`, `skipped`, no patient, bad FHIR, collector refusal), or CCE refused it (CCE's code and text) |
+| `NET_DOWNSTREAM_UNAVAILABLE` | 500 | Something that may pass: OpenHIM, the collector, CCE or onix down or slow. Send the event again later with the same event id |
+| `NET_INTERNAL_ERROR` | 500 | A fault in the HIE: CCE refused this adaptor's own context (`CTX_*`, wrong HIE settings), OpenHIM refused this adaptor's client (401, 403, 404), an unexpected answer, or an unexpected exception. Send again later; the HIE team must fix it |
 
-### 8.1 POST /beckn/bpp-webhook/{action}
+400 = do not send it again as it is. 5xx = may send it again; the resend carries the same event id, so CCE answers `Ack` (duplicate).
 
-Called by `onix-bpp` with requests from an HMIS (OpenMRS, Spice) on its "HIE feed" contract.
+### 8.1 POST /sygnal/event/report
 
-| `action` | What the adaptor does | Answer |
-|----------|-----------------------|--------|
-| `update` | Unwraps the FHIR resource and posts it to the OpenHIM channel (below) | By the channel's answer |
-| `confirm`, `status`, `cancel`, `select`, `init`, `track`, `rate`, `support`, any other | Nothing. Not supported in the demo | `Nack` (400) `NOT_SUPPORTED` |
+Called by `onix-openhim`'s receiver with a `sygnal/event/report` from an HMIS (OpenMRS). The adaptor checks it (codes above), unwraps the FHIR resource and posts it to the OpenHIM channel. It answers only when the channel has answered, that is, after CCE has answered the HIE's own `sygnal/event/report` (§8.2).
 
-**Request:** a Beckn `update`. `context.bapId` must be a `beckn.subscribers[].subscriber-id` and `message.contract.id` must be present (any value), or the answer is `Nack` (400) `BAD_REQUEST`. **Exactly one** `performance` entry, with an `id`, whose `performanceAttributes` is a `CceClinicalEvent` box; more than one is refused with `BAD_REQUEST`. Sample: [Beckn Integration §3.6](beckn-integration.md#36-example-inbound-update).
+**Request:** exactly one event, whose `eventAttributes` is a `CceClinicalEvent` box. Sample: [Beckn Integration §3](beckn-integration.md).
+
+```json
+{
+  "context": {
+    "version": "2.0.0",
+    "action": "sygnal/event/report",
+    "networkId": "sygnal.nextsteps.mdtlabs.org/sygnal_demo_network_registry",
+    "senderId": "bap.openmrs.nextsteps.mdtlabs.org",
+    "receiverId": "bap.openhim.nextsteps.mdtlabs.org",
+    "receiverUri": "https://hie.example.org/sygnal/receiver",
+    "transactionId": "6f1c2a4e-1d7b-4a55-9a0e-3f2b8c9d0e11",
+    "messageId": "0b9e7f3a-52c4-4e7d-8a61-7c2d9e4f1a22",
+    "timestamp": "2026-11-20T08:15:00Z"
+  },
+  "message": {
+    "events": [ {
+      "@type": "sygnal:CoordinationEvent",
+      "id": "3d5f8a90-7b1c-4e2a-9f63-1a2b3c4d5e6f",
+      "revision": 1,
+      "eventType": "DELIVERY_RECORDED",
+      "granularity": "INDIVIDUAL",
+      "from": { "id": "bap.openmrs.nextsteps.mdtlabs.org", "role": "PROVIDER" },
+      "occurredAt": "2026-11-20T08:10:00Z",
+      "eventAttributes": {
+        "@context": "https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema/CceClinicalEvent/v1.0/context.jsonld",
+        "@type": "cce:CceClinicalEvent",
+        "eventType": "Encounter",
+        "patientId": "Patient/12345",
+        "fhirVersion": "4.0.1",
+        "sourceEventId": "encounter-98765",
+        "resource": { "resourceType": "Encounter", "id": "98765", "...": "..." }
+      }
+    } ]
+  }
+}
+```
 
 **Call to the OpenHIM channel:**
 
@@ -450,55 +492,67 @@ POST {beckn.openhim-channel.url}
 Authorization: Basic <beckn.openhim-channel.username:password>
 Content-Type: application/json
 X-Source-System: <subscriber's source-system>
-X-Source-Event-Id: <performance[0].id>
+X-Source-Event-Id: <eventAttributes.sourceEventId, else events[0].id>
+X-Sygnal-Event-Id: <events[0].id>
+X-Sygnal-Occurred-At: <events[0].occurredAt, else context.timestamp>
 X-Correlation-Id: <context.messageId>
 
-<performance[0].performanceAttributes.resource>
+<events[0].eventAttributes.resource>
 ```
 
-No `X-Facility-Id` is sent; the pipeline reads the facility from the resource.
+`X-Source-Event-Id` uses `sourceEventId` only when it is header-safe (printable ASCII, at most 200 characters). `X-Sygnal-Occurred-At` is left out when both times are blank; `X-Correlation-Id` when the `messageId` is not header-safe. No `X-Facility-Id` is sent; the pipeline reads the facility from the resource. OpenHIM routes the request to `/inbound`, where the CloudEvent `id` is `X-Sygnal-Event-Id` (when it is a full UUID) and the CloudEvent `time` is `X-Sygnal-Occurred-At` (when it parses as an ISO-8601 offset date-time, else the time of receipt). So CCE de-duplicates on the same event id the HMIS sent.
 
 **Answer mapping:**
 
 | Channel answers (from `/inbound`) | HMIS gets |
 |-----------------------------------|-----------|
-| 202, event processed | `Ack`, then `on_update` with `ACCEPTED` |
-| 200 `"status":"ignored"` (no source matched, not FHIR, `Bundle`) | `Nack` (400) `EVENT_REJECTED` |
-| 200 `"status":"skipped"` (facility filter) | `Nack` (400) `EVENT_REJECTED` |
-| 400 `PATIENT_ID_NOT_FOUND`, 422 `FHIR_MAPPING_ERROR`, 4xx `COLLECTOR_CLIENT_ERROR` from the collector | `Nack` (400) `EVENT_REJECTED`, text = the code and message |
-| 400 `COLLECTOR_CLIENT_ERROR`, message `CCE EVENT_REJECTED: <text>` | `Nack` (400) `EVENT_REJECTED`, text `CCE: <text>` |
-| 400 `COLLECTOR_CLIENT_ERROR`, message `CCE BAD_REQUEST: …` or `CCE NOT_SUPPORTED: …` | `Nack` (500) `HIE_ERROR`, text = that message (`CCE <code>: <text>`) |
-| OpenHIM's own 401, 403 or 404 (client or channel setup) | `Nack` (500) `HIE_ERROR`, OpenHIM's text |
-| 5xx (`COLLECTOR_FORWARDING_ERROR`, `INTERNAL_ERROR`, OpenHIM route failure), 408, 429, timeout | `Nack` (500) `UNAVAILABLE` |
-| any other 2xx (not `processed`, `ignored` or `skipped`) | `Nack` (500) `HIE_ERROR` |
+| 2xx `"status":"processed"`, or 202 (CCE `Ack`, new or duplicate) | 202 `Ack` |
+| 2xx `"status":"ignored"` (no source matched, not FHIR, `Bundle`) | `Nack` (400) `BIZ_GENERIC_ERROR`, text `ignored: …` |
+| 2xx `"status":"skipped"` (facility filter) | `Nack` (400) `BIZ_GENERIC_ERROR`, text `skipped: …` |
+| 4xx `COLLECTOR_CLIENT_ERROR`, message `CCE BIZ_GENERIC_ERROR: <text>` | `Nack` (400) `BIZ_GENERIC_ERROR`, text `CCE: <text>` |
+| 4xx `COLLECTOR_CLIENT_ERROR`, message `CCE CTX_…: <text>` (CCE refused the HIE's own context) | `Nack` (500) `NET_INTERNAL_ERROR`, text = that message |
+| 4xx `COLLECTOR_CLIENT_ERROR`, message `CCE <other code>: <text>` (for example `SCH_*`) | `Nack` (400) `BIZ_GENERIC_ERROR`, text = that message |
+| 4xx pipeline error: 400 `PATIENT_ID_NOT_FOUND`, 422 `FHIR_MAPPING_ERROR`, `COLLECTOR_CLIENT_ERROR` from the collector | `Nack` (400) `BIZ_GENERIC_ERROR`, text = the code and message |
+| 408, 429, 5xx (`COLLECTOR_FORWARDING_ERROR`, `INTERNAL_ERROR`, OpenHIM route failure), no answer (timeout) | `Nack` (500) `NET_DOWNSTREAM_UNAVAILABLE`, text ends `Send the event again later.` |
+| other 4xx without a pipeline error body (OpenHIM's own 401, 403, 404), any other 2xx | `Nack` (500) `NET_INTERNAL_ERROR` |
 
-### 8.2 POST /beckn/bap-webhook/{action}
+### 8.2 Call to onix: sygnal/event/report to CCE
 
-Called by `onix-bap` with callbacks from CCE on the HIE's contract with CCE.
+| Message | Container | Path | When |
+|---------|-----------|------|------|
+| `sygnal/event/report` to CCE | `onix-openhim` | `{beckn.onix.caller-url}/sygnal/event/report` (`http://onix-openhim:8082/sygnal/caller/sygnal/event/report`). `onix-openhim` signs it and sends it to `context.receiverUri` + `/sygnal/event/report` (`onix-cce`'s receiver), which passes it to `cce-beckn-service` `POST /sygnal/event/report`, port 8075 | A CloudEvent from a source with `output: beckn` |
 
-| `action` | What the adaptor does | Answer |
-|----------|-----------------------|--------|
-| `on_update` from CCE | Logs the `messageId` (of this adaptor's `update`), the performance id (the CloudEvent `id`) and status, `ACCEPTED` or `DUPLICATE`. Log only | `Ack` |
-| `on_update` from another `bppId` or contract | Logs it | `Nack` (400) `BAD_REQUEST` |
-| `on_status` (CCE alerts), any other | Logs it. Out of scope for now | `Nack` (400) `NOT_SUPPORTED` |
+```json
+{
+  "context": {
+    "version": "2.0.0", "action": "sygnal/event/report",
+    "networkId": "<beckn.self.network-id>",
+    "senderId": "<beckn.self.id>", "receiverId": "<beckn.cce.id>", "receiverUri": "<beckn.cce.uri>",
+    "transactionId": "<new UUID per event>", "messageId": "<new UUID per try>", "timestamp": "<now>"
+  },
+  "message": {
+    "events": [ {
+      "@type": "sygnal:CoordinationEvent",
+      "id": "<CloudEvent id>",
+      "revision": 1,
+      "eventType": "DELIVERY_RECORDED",
+      "granularity": "INDIVIDUAL",
+      "from": { "id": "<beckn.self.id>", "role": "PROVIDER" },
+      "occurredAt": "<CloudEvent time>",
+      "eventAttributes": { "@context": "...", "@type": "cce:CceClinicalEvent", "...": "..." }
+    } ]
+  }
+}
+```
 
-CCE's `on_update` may arrive before the `Ack` of the `update`, or not at all (CCE sends it once). It never changes an answer already given.
+The event carries the CloudEvent in a `CceClinicalEvent` box: [Beckn Integration §5](beckn-integration.md). The event object has no `@context`; there is no contract and no commitment. The event `id` is the CloudEvent `id`, which for an event that came in over Sygnal is the HMIS's own event id. Its answer is mapped like a collector answer, so `/inbound` answers as it does today:
 
-### 8.3 Calls to onix
+| `onix-openhim` answers | `/inbound` answers |
+|------------------------|--------------------|
+| 2xx, body not `NACK` (CCE answers 202 `ACK` for a new and for a duplicate event) | 202, like collector `accepted` |
+| 4xx (not 408 or 429) `NACK` (`BIZ_GENERIC_ERROR`, `CTX_*`, `SCH_*`), or a 4xx from `onix-cce`'s schema check | 400 `COLLECTOR_CLIENT_ERROR`, message `CCE <code>: <text>` (code `BIZ_GENERIC_ERROR` when the body has none), like a collector 4xx. No retry |
+| 2xx `NACK` with `NET_DOWNSTREAM_UNAVAILABLE` or `NET_INTERNAL_ERROR` | 502 `COLLECTOR_FORWARDING_ERROR` |
+| 2xx `NACK` with any other code | 400 `COLLECTOR_CLIENT_ERROR`, as a 4xx `NACK` |
+| 408, 429, 5xx, timeout, connection refused | 502 `COLLECTOR_FORWARDING_ERROR`, like a collector failure. No retry inside the route (`beckn.cce.retry.max-attempts: 1`): a second try would not fit the channel's timeout. The HMIS resends |
 
-| Message | Container | Path | Contract | When |
-|---------|-----------|------|----------|------|
-| `update` to CCE | `onix-bap` | `{beckn.onix.bap-caller-url}/update` (`/bap/caller/update`). `cce-onix` passes it to `cce-beckn-service` `POST /api/bpp-webhook/update`, port 8075 | HIE to CCE (`beckn.cce.*`, commitment `cce-care-coordination`) | A CloudEvent from a source with `output: beckn` |
-| `on_update` to the HMIS | `onix-bpp` | `{beckn.onix.bpp-caller-url}/on_update` (`/bpp/caller/on_update`) | The HMIS's HIE feed (`beckn.subscribers[]`) | After an `Ack` on §8.1 |
-
-`update` to CCE carries the CloudEvent in a `CceClinicalEvent` box: [Beckn Integration §5.2–5.3](beckn-integration.md#52-cloudevent--cceclinicalevent-box). Its answer is mapped like a collector answer, so `/inbound` answers as it does today:
-
-| `onix-bap` answers | `/inbound` answers |
-|--------------------|--------------------|
-| 200 `ACK` | 202, like collector `accepted` |
-| 400 `NACK` (`EVENT_REJECTED`, `BAD_REQUEST`, `NOT_SUPPORTED`), or a 400 from `cce-onix`'s schema check | 400 `COLLECTOR_CLIENT_ERROR`, message `CCE <code>: <CCE's text>`, like a collector 4xx. No retry |
-| 500 `NACK` (`COLLECTOR_UNAVAILABLE`, `INTERNAL_ERROR`), 408, 429, other 5xx, timeout, connection refused | 502 `COLLECTOR_FORWARDING_ERROR`, like a collector failure. No retry inside the route (`beckn.cce.retry.max-attempts: 1`): a second try would not fit the channel's timeout. The HMIS resends |
-
-CCE's `Ack` can take up to 17 s, so `beckn.onix.timeout` is 25 s ([Beckn Integration §8.3](beckn-integration.md#83-every-answer-returns-in-the-same-call)). The outbound performance id is the CloudEvent `id` (36 characters; CCE allows 50), and CCE uses it unchanged as its CloudEvent `id`.
-
-`on_update` to the HMIS: performance `{ "id": <the HMIS's performance[0].id>, "status": { "code": "ACCEPTED" } }`, same `transactionId` and `messageId` as the `update` it answers. A failure is logged and counted; the `Ack` stands.
+CCE's `Ack` can take up to about 17 s, so `beckn.onix.timeout` is 20 s, under the OpenHIM channel timeout (about 22–23 s) and `beckn.openhim-channel.timeout` (25 s) ([Beckn Integration §8.3](beckn-integration.md#83-every-answer-returns-in-the-same-call)). The OpenHIM orchestration is named `Forward to CCE over Sygnal`, path `/sygnal/caller/sygnal/event/report`.

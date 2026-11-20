@@ -7,8 +7,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.openphc.cce.emitter.config.EmitterProperties.Output;
@@ -19,13 +17,10 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
-import org.springframework.core.io.DefaultResourceLoader;
 
 /** The startup checks of spec §7. */
 class BecknStartupValidatorTest {
 
-    private final ObjectMapper mapper = new ObjectMapper();
-    private final DefaultResourceLoader loader = new DefaultResourceLoader();
     private final List<String> warnings = new ArrayList<>();
 
     private static EmitterProperties sources(Map<String, SourceProperties> sources) {
@@ -37,7 +32,7 @@ class BecknStartupValidatorTest {
             OPENMRS_SOURCE, new SourceProperties(null, Output.BECKN)));
 
     private List<String> validate(BecknProperties beckn, EmitterProperties emitter) {
-        return BecknStartupValidator.validate(beckn, emitter, loader, mapper, warnings);
+        return BecknStartupValidator.validate(beckn, emitter, warnings);
     }
 
     @Test
@@ -72,25 +67,50 @@ class BecknStartupValidatorTest {
     @Test
     @DisplayName("a subscriber's source-system is not a source → error")
     void unknownSourceSystem() {
-        BecknProperties.Subscriber s = new BecknProperties.Subscriber(OPENMRS_BAP_ID, "u", null, "nope");
+        BecknProperties.Subscriber s = new BecknProperties.Subscriber(OPENMRS_ID, "nope");
         assertThat(validate(properties(true, "cce-beckn-endpoint", List.of(s)), DEFAULT_SOURCES))
                 .anySatisfy(e -> assertThat(e).contains("'nope' is not a key under cce.emitter.sources"));
     }
 
     @Test
-    @DisplayName("a commitment file that cannot be read → error")
-    void missingCommitmentFile() {
-        assertThat(validate(properties(true, "cce-beckn-endpoint", "bap.openhim.example.org",
-                "classpath:beckn/nope.json", List.of(openmrsSubscriber())), DEFAULT_SOURCES))
-                .anySatisfy(e -> assertThat(e).contains("nope.json"));
+    @DisplayName("beckn.self.id longer than 100 characters (CCE's CloudEvent source) → error")
+    void selfIdTooLong() {
+        assertThat(validate(properties(true, "cce-beckn-endpoint", "b".repeat(101), List.of(openmrsSubscriber())),
+                DEFAULT_SOURCES))
+                .anySatisfy(e -> assertThat(e).contains("beckn.self.id is longer than 100"));
     }
 
     @Test
-    @DisplayName("beckn.self.bap-id longer than 100 characters → error")
-    void bapIdTooLong() {
-        assertThat(validate(properties(true, "cce-beckn-endpoint", "b".repeat(101),
-                "classpath:beckn/commitment-cce.json", List.of(openmrsSubscriber())), DEFAULT_SOURCES))
-                .anySatisfy(e -> assertThat(e).contains("longer than 100"));
+    @DisplayName("missing ids → one error per setting")
+    void missingIds() {
+        BecknProperties p = properties(true, "cce-beckn-endpoint", List.of(openmrsSubscriber()));
+        BecknProperties empty = new BecknProperties(true, p.schemaBaseUrl(), new BecknProperties.Onix("", 20000),
+                new BecknProperties.Self(null, ""), new BecknProperties.Cce(null, " ", p.cce().retry()),
+                p.openhimChannel(), p.subscribers());
+        assertThat(validate(empty, DEFAULT_SOURCES)).contains(
+                "beckn.onix.caller-url is not set", "beckn.self.id is not set", "beckn.self.network-id is not set",
+                "beckn.cce.id is not set", "beckn.cce.uri is not set");
+    }
+
+    @Test
+    @DisplayName("a subscriber listed twice → error")
+    void duplicateSubscriber() {
+        assertThat(validate(properties(true, "cce-beckn-endpoint", List.of(openmrsSubscriber(), openmrsSubscriber())),
+                DEFAULT_SOURCES))
+                .anySatisfy(e -> assertThat(e).contains("is listed twice"));
+    }
+
+    @Test
+    @DisplayName("timeouts that do not nest (§8.3) → warnings only")
+    void timeoutsThatDoNotNest() {
+        BecknProperties p = properties(true, "cce-beckn-endpoint", List.of(openmrsSubscriber()));
+        BecknProperties slow = new BecknProperties(true, p.schemaBaseUrl(),
+                new BecknProperties.Onix(p.onix().callerUrl(), 30000), p.self(), p.cce(),
+                new BecknProperties.OpenHimChannel(p.openhimChannel().url(), p.openhimChannel().username(), "s", 30000),
+                p.subscribers());
+        assertThat(validate(slow, DEFAULT_SOURCES)).isEmpty();
+        assertThat(warnings).anySatisfy(w -> assertThat(w).contains("is not below beckn.openhim-channel.timeout"));
+        assertThat(warnings).anySatisfy(w -> assertThat(w).contains("30000 ms onix waits"));
     }
 
     @Test
@@ -115,15 +135,10 @@ class BecknStartupValidatorTest {
 
     private static final String[] ENABLED = {
             "beckn.enabled=true",
-            "beckn.onix.bap-caller-url=http://onix-bap/bap/caller",
-            "beckn.onix.bpp-caller-url=http://onix-bpp/bpp/caller",
-            "beckn.self.bap-id=bap.openhim.example.org", "beckn.self.bap-uri=https://hie/bap",
-            "beckn.self.bpp-id=bpp.openhim.example.org", "beckn.self.bpp-uri=https://hie/bpp",
-            "beckn.cce.bpp-id=bpp.mdtlabs.org", "beckn.cce.bpp-uri=https://cce/bpp",
-            "beckn.cce.contract-id=c", "beckn.cce.transaction-id=t",
+            "beckn.self.id=bap.openhim.example.org", "beckn.self.network-id=" + NETWORK_ID,
+            "beckn.cce.id=" + CCE_ID, "beckn.cce.uri=" + CCE_URI,
             "beckn.openhim-channel.url=http://openhim/cce-beckn",
-            "beckn.subscribers[0].subscriber-id=" + OPENMRS_BAP_ID,
-            "beckn.subscribers[0].subscriber-uri=https://openmrs/bap",
+            "beckn.subscribers[0].subscriber-id=" + OPENMRS_ID,
             "beckn.subscribers[0].source-system=" + OPENMRS_SOURCE,
             "cce.emitter.sources.ebuzima.client-id=ebuzima-emr-client",
             "cce.emitter.sources." + OPENMRS_SOURCE + ".output=beckn",
@@ -137,10 +152,11 @@ class BecknStartupValidatorTest {
                 .run(ctx -> {
                     assertThat(ctx).hasNotFailed();
                     BecknProperties p = ctx.getBean(BecknProperties.class);
-                    assertThat(p.onix().timeout()).isEqualTo(25000);
-                    assertThat(p.openhimChannel().timeout()).isEqualTo(35000);
+                    assertThat(p.onix().callerUrl()).isEqualTo("http://onix-openhim:8082/sygnal/caller");
+                    assertThat(p.onix().timeout()).isEqualTo(20000);
+                    assertThat(p.openhimChannel().timeout()).isEqualTo(25000);
                     assertThat(p.cce().retry().maxAttempts()).isEqualTo(1);
-                    assertThat(p.cce().commitmentFile()).isEqualTo("classpath:beckn/commitment-cce.json");
+                    assertThat(p.subscriber(OPENMRS_ID)).contains(openmrsSubscriber());
                     EmitterProperties e = ctx.getBean(EmitterProperties.class);
                     assertThat(e.sources().get(OPENMRS_SOURCE).output()).isEqualTo(Output.BECKN);
                     // No explicit output: it follows beckn.enabled, which is on here.

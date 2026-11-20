@@ -6,8 +6,9 @@ import org.openphc.cce.emitter.model.beckn.CceClinicalEvent;
 import org.springframework.stereotype.Component;
 
 /**
- * Maps a built CloudEvent to the {@code CceClinicalEvent} box (spec §5.2). The performance id of
- * the {@code update} is the CloudEvent {@code id}; the box carries the rest.
+ * Maps a built CloudEvent to the {@code CceClinicalEvent} box (spec §5.2). The event id of the
+ * {@code sygnal/event/report} is the CloudEvent {@code id} and its {@code occurredAt} the CloudEvent
+ * {@code time}; the box carries the rest.
  *
  * <ul>
  *   <li>{@code eventType} ← {@code type} (the FHIR resource type)</li>

@@ -14,13 +14,14 @@ import org.springframework.stereotype.Service;
 /**
  * Picks the output of a CloudEvent by its source ({@code cce.emitter.sources.<key>.output}, spec
  * §5.1): {@link CollectorForwardingService} for {@code collector} (the default, today's behaviour)
- * or {@link BecknForwardingService} for {@code beckn}.
+ * or {@link BecknForwardingService} for {@code beckn} (a {@code sygnal/event/report} to CCE).
  */
 @Service
 public class EventForwardingRouter {
 
     static final String COLLECTOR_ORCHESTRATION = "Forward to CCE Collector";
-    static final String OPENHIM_EMITTER_BECKN_ORCHESTRATION = "Forward to CCE over Beckn";
+    static final String OPENHIM_EMITTER_BECKN_ORCHESTRATION = "Forward to CCE over Sygnal";
+    static final String DEFAULT_CALLER_URL = "http://onix-openhim:8082/sygnal/caller";
 
     private final Map<String, EmitterProperties.SourceProperties> sources;
     private final CollectorForwardingService collectorForwardingService;
@@ -69,9 +70,9 @@ public class EventForwardingRouter {
     /** The OpenHIM orchestration request path of the output. */
     public String orchestrationPath(Output output) {
         if (output == Output.BECKN) {
-            String caller = becknProperties != null && becknProperties.onix().bapCallerUrl() != null
-                    ? becknProperties.onix().bapCallerUrl() : "/bap/caller";
-            return pathOf(caller) + "/update";
+            String caller = becknProperties != null && becknProperties.onix().callerUrl() != null
+                    ? becknProperties.onix().callerUrl() : DEFAULT_CALLER_URL;
+            return pathOf(caller) + "/" + BecknMessageFactory.EVENT_REPORT;
         }
         return collectorProperties.eventsPath();
     }

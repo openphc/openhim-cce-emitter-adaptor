@@ -357,55 +357,56 @@ flowchart LR
     COL --> KAFKA
 ```
 
-## 9. Beckn Flows (Proposal)
+## 9. Sygnal Flows (Proposal)
 
-> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). The flows in §1–§8 are unchanged: with `beckn.enabled=false` (default) and every source on `output: collector` (default), events go from OpenHIM to the CCE Collector as today.
+> **Status:** Built on branch `sygnal-actions`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). The flows in §1–§8 are unchanged: with `beckn.enabled=false` and every source on `output: collector`, events go from OpenHIM to the CCE Collector as today.
 
-### 9.1 Beckn Inbound → Channel → Pipeline → Beckn Output
+### 9.1 Sygnal Inbound → Channel → Pipeline → Sygnal Output
 
-All answers come back in the same HTTP call.
+Both hops use the action `sygnal/event/report`. There are no callbacks: every answer comes back in the same HTTP call, and the HMIS gets its answer only after CCE has answered.
 
 ```mermaid
 sequenceDiagram
-    participant HB as HMIS onix(bap)
-    participant BPP as openhim-onix(bpp)
-    participant BW as BecknBppWebhookController<br/>+ BecknInboundService
-    participant OHC as OpenHIM Core<br/>(Beckn channel)
+    participant HM as OpenMRS emitter<br/>→ onix-openmrs caller
+    participant OR as onix-openhim<br/>receiver
+    participant BW as SygnalEventReportController<br/>+ BecknInboundService
+    participant OHC as OpenHIM Core<br/>(channel /cce-beckn)
     participant IN as InboundEventController<br/>+ InboundEventService
     participant SA as SourceAdaptorService<br/>+ CloudEventEnvelopeBuilder
     participant BF as BecknForwardingService
-    participant BAP as openhim-onix(bap)
-    participant CCE as cce-onix(bpp)<br/>→ cce-beckn-service :8075<br/>→ Collector
+    participant OC as onix-openhim<br/>caller
+    participant CCE as onix-cce receiver<br/>→ cce-beckn-service :8075<br/>→ Collector
 
-    HB->>BPP: update (signed by the HMIS)
-    BPP->>BW: POST /beckn/bpp-webhook/update
+    HM->>OR: sygnal/event/report (signed by the HMIS)
+    OR->>BW: POST /sygnal/event/report
     activate BW
     Note over BW: Counter: cce.emitter.beckn.received
-    BW->>BW: subscriber by context.bapId, contract id present,<br/>exactly one performance entry
-    BW->>BW: take performance[0].performanceAttributes.resource
-    BW->>OHC: POST channel (Basic auth)<br/>X-Source-System, X-Source-Event-Id, X-Correlation-Id
+    BW->>BW: action, senderId in subscribers, receiverId = beckn.self.id,<br/>messageId, exactly one event, id a UUID, CceClinicalEvent box
+    BW->>BW: take events[0].eventAttributes.resource
+    BW->>OHC: POST channel (Basic auth)<br/>X-Source-System, X-Source-Event-Id, X-Sygnal-Event-Id,<br/>X-Sygnal-Occurred-At, X-Correlation-Id
     activate OHC
+    Note over BW: Timer: cce.emitter.beckn.channel.latency
     OHC->>IN: POST /inbound (primary route)<br/>+ X-OpenHIM-ClientID, X-OpenHIM-TransactionID
     activate IN
     IN->>SA: adapt(request)
     activate SA
     SA->>SA: resolveSource: X-OpenHIM-ClientID, then X-Source-System
     SA->>SA: parse FHIR, patient id, facility (from resource), filter
-    SA->>SA: redact, build CloudEvent<br/>id = UUID v5(source key : X-Source-Event-Id)
+    SA->>SA: redact, build CloudEvent<br/>id = X-Sygnal-Event-Id, time = X-Sygnal-Occurred-At
     SA-->>IN: CloudEventDto
     deactivate SA
     IN->>IN: EventForwardingRouter: source output = beckn
     IN->>BF: forward(cloudEvent)
     activate BF
-    BF->>BF: CceClinicalEventMapper: CloudEvent → box<br/>performance[0].id = CloudEvent id
-    BF->>BAP: POST /bap/caller/update (HIE to CCE contract,<br/>commitment cce-care-coordination)
-    activate BAP
+    BF->>BF: CceClinicalEventMapper: CloudEvent → box<br/>events[0].id = CloudEvent id (the HMIS's id)
+    BF->>OC: POST /sygnal/caller/sygnal/event/report
+    activate OC
     Note over BF: Timer: cce.emitter.beckn.onix.latency
-    BAP->>CCE: update (signed by OpenHIM)<br/>POST /api/bpp-webhook/update
-    CCE-->>BAP: 200 ACK (up to 17 s)
-    BAP-->>BF: 200 ACK
-    deactivate BAP
-    Note over BF: Counter: cce.emitter.beckn.cce.update.sent, result ack
+    OC->>CCE: sygnal/event/report (signed by the HIE)<br/>to context.receiverUri + /sygnal/event/report
+    CCE-->>OC: 202 ACK (up to ~17 s; new or duplicate)
+    OC-->>BF: 202 ACK
+    deactivate OC
+    Note over BF: Counter: cce.emitter.beckn.cce.report.sent, result ack
     BF-->>IN: CollectorResponse (accepted)
     deactivate BF
     Note over IN: Counter: cce.emitter.events.forwarded
@@ -413,32 +414,32 @@ sequenceDiagram
     deactivate IN
     OHC-->>BW: 202 + ProcessedEventsResponse
     deactivate OHC
-    BW-->>BPP: 200 ACK (request's messageId)
+    Note over BW: Counter: cce.emitter.beckn.answered, result ack
+    BW-->>OR: 202 ACK (request's messageId)
     deactivate BW
-    BPP-->>HB: 200 ACK
-    BW-)BPP: POST /bpp/caller/on_update (ACCEPTED), after the Ack
-    Note over BW: Counter: cce.emitter.beckn.onupdate.sent
-    CCE-)BAP: on_update (ACCEPTED or DUPLICATE),<br/>may come before the Ack, or never (§9.4)
+    OR-->>HM: 202 ACK
 ```
 
-### 9.2 Unwrap Endpoint: Answer Mapping
+### 9.2 Sygnal Endpoint: Answer Mapping
 
 ```mermaid
 flowchart TD
-    A[POST /beckn/bpp-webhook/action] --> B{action = update?}
-    B -->|No| N0[Nack 400<br/>NOT_SUPPORTED]
-    B -->|Yes| C{bapId in subscribers<br/>and contract id present?}
-    C -->|No| N1[Nack 400<br/>BAD_REQUEST]
-    C -->|Yes| D{one performance entry,<br/>CceClinicalEvent box,<br/>resource with resourceType?}
-    D -->|No| N2[Nack 400<br/>BAD_REQUEST]
+    A[POST /sygnal/event/report] --> J{JSON body?}
+    J -->|No| N7[Nack 400<br/>SCH_INVALID_JSON]
+    J -->|Yes| B{action = sygnal/event/report?}
+    B -->|No| N0[Nack 400<br/>CTX_ACTION_MISMATCH]
+    B -->|Yes| C{senderId a subscriber,<br/>receiverId = beckn.self.id,<br/>messageId present?}
+    C -->|No| N1[Nack 400<br/>CTX_MISSING_FIELD or<br/>CTX_INVALID_FIELD]
+    C -->|Yes| D{one event, id a UUID,<br/>CceClinicalEvent box,<br/>resource with resourceType?}
+    D -->|No| N2[Nack 400<br/>SCH_REQUIRED_FIELD_MISSING,<br/>SCH_SCHEMA_VALIDATION_FAILED or<br/>SCH_TYPE_NOT_SUPPORTED]
     D -->|Yes| E[POST FHIR to OpenHIM channel]
     E --> F{Channel answer}
-    F -->|202 processed| ACK[Ack 200<br/>then on_update ACCEPTED]
-    F -->|200 status ignored| N3[Nack 400 EVENT_REJECTED<br/>Counter: beckn.channel.ignored]
-    F -->|200 status skipped| N4[Nack 400 EVENT_REJECTED proposal<br/>Counter: beckn.channel.ignored]
-    F -->|4xx, CCE EVENT_REJECTED,<br/>pipeline refusal| N5[Nack 400 EVENT_REJECTED<br/>text from body]
-    F -->|4xx, CCE BAD_REQUEST<br/>or NOT_SUPPORTED| N6[Nack 500 HIE_ERROR<br/>CCE's text]
-    F -->|5xx / timeout| S[Nack 500 UNAVAILABLE]
+    F -->|2xx processed or 202| ACK[Ack 202]
+    F -->|2xx status ignored| N3[Nack 400 BIZ_GENERIC_ERROR<br/>Counter: beckn.channel.ignored]
+    F -->|2xx status skipped| N4[Nack 400 BIZ_GENERIC_ERROR<br/>Counter: beckn.channel.ignored]
+    F -->|4xx, CCE BIZ_GENERIC_ERROR or SCH_*,<br/>pipeline refusal| N5[Nack 400 BIZ_GENERIC_ERROR<br/>text from body]
+    F -->|4xx, CCE CTX_*,<br/>OpenHIM 401/403/404, other 2xx| N6[Nack 500 NET_INTERNAL_ERROR]
+    F -->|408, 429, 5xx, timeout| S[Nack 500<br/>NET_DOWNSTREAM_UNAVAILABLE]
 
     style ACK fill:#c8e6c9
     style N3 fill:#ffe0b2
@@ -446,19 +447,19 @@ flowchart TD
     style S fill:#ffcdd2
 ```
 
-### 9.3 Beckn Output: Answer Mapping
+### 9.3 Sygnal Output: Answer Mapping
 
-The Beckn output returns the same results to `InboundEventService` as the collector path.
+The Sygnal output returns the same results to `InboundEventService` as the collector path.
 
 ```mermaid
 flowchart TD
     A[EventForwardingRouter] --> B{source output}
     B -->|collector| C[CollectorForwardingService<br/>unchanged]
-    B -->|beckn| D[BecknForwardingService<br/>POST onix-bap /bap/caller/update]
-    D --> E{CCE answer via onix-bap}
-    E -->|200 ACK| OK[like collector 202 accepted<br/>/inbound → 202]
-    E -->|400 NACK EVENT_REJECTED,<br/>BAD_REQUEST, NOT_SUPPORTED| CL[CollectorClientException<br/>/inbound → 400 COLLECTOR_CLIENT_ERROR<br/>message: CCE code + text<br/>no retry]
-    E -->|500 NACK COLLECTOR_UNAVAILABLE,<br/>INTERNAL_ERROR, 408, 429, timeout| FW[CollectorForwardingException<br/>/inbound → 502 COLLECTOR_FORWARDING_ERROR<br/>no retry inside the route, the HMIS resends]
+    B -->|beckn| D[BecknForwardingService<br/>POST onix-openhim /sygnal/caller/sygnal/event/report]
+    D --> E{CCE answer via onix-openhim}
+    E -->|2xx, not NACK<br/>new or duplicate| OK[like collector 202 accepted<br/>/inbound → 202]
+    E -->|4xx NACK BIZ_GENERIC_ERROR,<br/>CTX_*, SCH_*, other 2xx NACK| CL[CollectorClientException<br/>/inbound → 400 COLLECTOR_CLIENT_ERROR<br/>message: CCE code + text<br/>no retry]
+    E -->|NACK NET_DOWNSTREAM_UNAVAILABLE,<br/>NET_INTERNAL_ERROR, 408, 429, 5xx, timeout| FW[CollectorForwardingException<br/>/inbound → 502 COLLECTOR_FORWARDING_ERROR<br/>no retry inside the route, the HMIS resends]
 
     style C fill:#e1f5fe
     style OK fill:#c8e6c9
@@ -466,22 +467,6 @@ flowchart TD
     style FW fill:#ffcdd2
 ```
 
-### 9.4 Callback from CCE
+### 9.4 No Callbacks
 
-```mermaid
-sequenceDiagram
-    participant CCE as cce-onix(bpp)
-    participant BAP as openhim-onix(bap)
-    participant CB as BecknBapWebhookController
-
-    CCE->>BAP: on_update (ACCEPTED or DUPLICATE)
-    BAP->>CB: POST /beckn/bap-webhook/on_update
-    activate CB
-    CB->>CB: check bppId
-    Note over CB: Log messageId (of our update),<br/>performance id (CloudEvent id) + status. Log only
-    Note over CB: Counter: cce.emitter.beckn.cce.onupdate.received<br/>DUPLICATE also: cce.emitter.events.duplicate
-    CB-->>BAP: 200 ACK (callback's messageId)
-    deactivate CB
-```
-
-CCE sends `on_update` once. It may arrive before the `Ack` of the `update`, or not at all. It never changes what the HMIS was told.
+There is no `on_update` (or any other callback) on either hop. CCE's synchronous answer is passed back through `/inbound` and the OpenHIM channel to the HMIS in the same call. If the HIE times out first (`beckn.openhim-channel.timeout`, 25 s), the HMIS gets 500 `NET_DOWNSTREAM_UNAVAILABLE` and sends the event again. The resend carries the same event id, so CCE answers `Ack` for the duplicate.

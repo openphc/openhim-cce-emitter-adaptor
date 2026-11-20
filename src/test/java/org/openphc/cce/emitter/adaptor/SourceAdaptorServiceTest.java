@@ -710,6 +710,44 @@ class SourceAdaptorServiceTest {
         }
     }
 
+    // ==================== Sygnal headers ====================
+
+    @Nested
+    class SygnalHeaders {
+
+        private CloudEventDto adapt(Map<String, String> extra) {
+            Map<String, String> headers = new java.util.HashMap<>(extra);
+            headers.put("X-OpenHIM-ClientID", CLIENT_ID);
+            headers.put("X-Source-Event-Id", "Encounter/7d2c9b1e");
+            return service.adapt(InboundRequest.from(encounterJson, headers, "/inbound")).get(0);
+        }
+
+        @Test
+        void sygnalEventIdAndOccurredAt_becomeIdAndTime() {
+            CloudEventDto event = adapt(Map.of(
+                    "X-Sygnal-Event-Id", "3f6c1c1e-8a53-4b0e-9d7a-2b6f4e1a9c10",
+                    "X-Sygnal-Occurred-At", "2026-11-13T07:55:00Z"));
+
+            assertThat(event.getId()).isEqualTo("3f6c1c1e-8a53-4b0e-9d7a-2b6f4e1a9c10");
+            assertThat(event.getTime()).isEqualTo("2026-11-13T07:55:00Z");
+            assertThat(event.getSourceeventid()).isEqualTo("Encounter/7d2c9b1e");
+        }
+
+        @Test
+        void noSygnalHeaders_idIsDerivedFromSourceEventId() {
+            CloudEventDto a = adapt(Map.of());
+            CloudEventDto b = adapt(Map.of());
+            assertThat(a.getId()).isEqualTo(b.getId()).matches("^[0-9a-f-]{36}$");
+        }
+
+        @Test
+        void sygnalEventIdThatIsNotAUuid_isIgnored() {
+            CloudEventDto event = adapt(Map.of("X-Sygnal-Event-Id", "enc-1", "X-Sygnal-Occurred-At", "yesterday"));
+            assertThat(event.getId()).isNotEqualTo("enc-1").hasSize(36);
+            assertThat(event.getTime()).isNotBlank();
+        }
+    }
+
     // ==================== Helpers ====================
 
     private static FacilityFilter disabledFilter() {

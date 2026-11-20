@@ -33,18 +33,20 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
- * The Beckn role end to end, with {@code beckn.enabled=true}. One WireMock server plays:
+ * The Sygnal role end to end, with {@code beckn.enabled=true}: both hops are
+ * {@code sygnal/event/report}, with no callback on either. One WireMock server plays:
  * <ul>
  *   <li>the OpenHIM channel ({@code /inbound}): it proxies to this adaptor's own {@code /inbound}
  *       and adds {@code X-OpenHIM-ClientID}, as OpenHIM Core does; single tests replace it with a
  *       fixed answer (5xx, 401)</li>
- *   <li>{@code onix-bap} ({@code /bap/caller/update}) answering for CCE</li>
- *   <li>{@code onix-bpp} ({@code /bpp/caller/on_update}) receiving the HMIS's {@code on_update}</li>
+ *   <li>{@code onix-openhim}'s Sygnal caller ({@code /sygnal/caller/sygnal/event/report}) answering
+ *       for CCE</li>
  *   <li>the CCE Collector ({@code /v1/events}) for the sources that stay on {@code collector}</li>
  * </ul>
  */
@@ -54,6 +56,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 class BecknIntegrationTest {
 
     private static final int ONIX_TIMEOUT_MS = 1500;
+    private static final String ENDPOINT = "/sygnal/event/report";
+    private static final String CCE_REPORT = "/sygnal/caller/sygnal/event/report";
 
     private static WireMockServer wm;
 
@@ -85,37 +89,29 @@ class BecknIntegrationTest {
         r.add("cce.collector.url", () -> base);
         r.add("cce.collector.retry.backoff-ms", () -> "50");
         r.add("cce.emitter.sources." + OPENMRS_SOURCE + ".output", () -> "beckn");
-        // With Beckn on, a source without an output would follow it; ebuzima stays on the collector explicitly.
+        // With Sygnal on, a source without an output would follow it; ebuzima stays on the collector explicitly.
         r.add("cce.emitter.sources.ebuzima.output", () -> "collector");
         r.add("beckn.enabled", () -> "true");
-        r.add("beckn.onix.bap-caller-url", () -> base + "/bap/caller");
-        r.add("beckn.onix.bpp-caller-url", () -> base + "/bpp/caller");
+        r.add("beckn.onix.caller-url", () -> base + "/sygnal/caller");
         r.add("beckn.onix.timeout", () -> String.valueOf(ONIX_TIMEOUT_MS));
-        r.add("beckn.self.bap-id", () -> "bap.openhim.example.org");
-        r.add("beckn.self.bap-uri", () -> "https://hie.example.org/bap/receiver");
-        r.add("beckn.self.bpp-id", () -> "bpp.openhim.example.org");
-        r.add("beckn.self.bpp-uri", () -> "https://hie.example.org/bpp/receiver");
-        r.add("beckn.cce.bpp-id", () -> CCE_BPP_ID);
-        r.add("beckn.cce.bpp-uri", () -> "https://cce.example.org/bpp/receiver");
-        r.add("beckn.cce.contract-id", () -> CCE_CONTRACT);
-        r.add("beckn.cce.transaction-id", () -> CCE_TXN);
+        r.add("beckn.self.id", () -> SELF_ID);
+        r.add("beckn.self.network-id", () -> NETWORK_ID);
+        r.add("beckn.cce.id", () -> CCE_ID);
+        r.add("beckn.cce.uri", () -> CCE_URI);
         r.add("beckn.openhim-channel.url", () -> base + "/inbound");
         r.add("beckn.openhim-channel.username", () -> "cce-beckn-endpoint");
         r.add("beckn.openhim-channel.password", () -> "secret");
         r.add("beckn.openhim-channel.timeout", () -> "8000");
-        r.add("beckn.subscribers[0].subscriber-id", () -> OPENMRS_BAP_ID);
-        r.add("beckn.subscribers[0].subscriber-uri", () -> "https://openmrs.example.org/bap/receiver");
+        r.add("beckn.subscribers[0].subscriber-id", () -> OPENMRS_ID);
         r.add("beckn.subscribers[0].source-system", () -> OPENMRS_SOURCE);
     }
 
     @BeforeEach
-    void stubChannelAndOnBpp() {
+    void stubChannel() {
         // The OpenHIM channel: a primary route to this adaptor's /inbound
         wm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo("/inbound")).atPriority(10)
                 .willReturn(aResponse().proxiedFrom("http://localhost:" + port)
                         .withAdditionalRequestHeader("X-OpenHIM-ClientID", "cce-beckn-endpoint")));
-        wm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo("/bpp/caller/on_update"))
-                .willReturn(okJson("{\"message\":{\"status\":\"ACK\",\"messageId\":\"" + MESSAGE_ID + "\"}}")));
     }
 
     @AfterEach
@@ -126,13 +122,13 @@ class BecknIntegrationTest {
     // ==================== Helpers ====================
 
     private static void stubCce(int status, String body) {
-        wm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo("/bap/caller/update"))
+        wm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo(CCE_REPORT))
                 .willReturn(aResponse().withStatus(status).withHeader("Content-Type", "application/json")
                         .withBody(body)));
     }
 
     private static void stubCceAck() {
-        stubCce(200, "{\"message\":{\"status\":\"ACK\",\"messageId\":\"x\"}}");
+        stubCce(202, "{\"message\":{\"status\":\"ACK\",\"messageId\":\"x\"}}");
     }
 
     private static void stubCceNack(int status, String code, String text) {
@@ -146,22 +142,24 @@ class BecknIntegrationTest {
                         .withBody("{\"data\":{\"eventId\":\"c-1\",\"status\":\"accepted\"}}")));
     }
 
-    private org.springframework.test.web.servlet.ResultActions sendUpdate(String body) throws Exception {
-        return mockMvc.perform(post("/beckn/bpp-webhook/update")
-                .contentType(MediaType.APPLICATION_JSON).content(body));
+    private ResultActions sendReport(String body) throws Exception {
+        return mockMvc.perform(post(ENDPOINT).contentType(MediaType.APPLICATION_JSON).content(body));
     }
 
-    private static List<LoggedRequest> onUpdatesSent(long waitMs) throws InterruptedException {
-        long until = System.currentTimeMillis() + waitMs;
-        List<LoggedRequest> found;
-        do {
-            found = wm.findAll(postRequestedFor(urlEqualTo("/bpp/caller/on_update")));
-            if (!found.isEmpty()) {
-                return found;
-            }
-            Thread.sleep(50);
-        } while (System.currentTimeMillis() < until);
-        return found;
+    private List<JsonNode> reportsToCce() throws Exception {
+        List<LoggedRequest> found = wm.findAll(postRequestedFor(urlEqualTo(CCE_REPORT)));
+        List<JsonNode> out = new java.util.ArrayList<>();
+        for (LoggedRequest r : found) {
+            out.add(mapper.readTree(r.getBodyAsString()));
+        }
+        return out;
+    }
+
+    /** Nothing but the report went to onix: no callbacks, and the action's slashes were never encoded. */
+    private static void onlyReportsWentToOnix(int reports) {
+        wm.verify(reports, postRequestedFor(urlMatching("/sygnal/caller/.*")));
+        wm.verify(0, anyRequestedFor(urlMatching(".*%2F.*")));
+        wm.verify(0, anyRequestedFor(urlMatching(".*(on_update|on_status|bpp|bap).*")));
     }
 
     private double count(String name, String... tags) {
@@ -169,19 +167,19 @@ class BecknIntegrationTest {
         return search.counters().stream().mapToDouble(c -> c.count()).sum();
     }
 
-    // ==================== Unwrap endpoint ====================
+    // ==================== HMIS -> HIE: the sygnal/event/report endpoint ====================
 
     @Nested
-    @DisplayName("POST /beckn/bpp-webhook/update")
-    class BppWebhook {
+    @DisplayName("POST /sygnal/event/report")
+    class ReportEndpoint {
 
         @Test
-        @DisplayName("happy path: channel → /inbound → CCE ACK → Ack, then on_update ACCEPTED")
+        @DisplayName("happy path: channel → /inbound → CCE ACK → 202 Ack, the same event id on both hops, no callback")
         void happyPath() throws Exception {
             stubCceAck();
 
-            sendUpdate(update(ENCOUNTER))
-                    .andExpect(status().isOk())
+            sendReport(report(ENCOUNTER))
+                    .andExpect(status().isAccepted())
                     .andExpect(jsonPath("$.message.status", is("ACK")))
                     .andExpect(jsonPath("$.message.messageId", is(MESSAGE_ID)))
                     .andExpect(jsonPath("$.message.error").doesNotExist());
@@ -193,239 +191,288 @@ class BecknIntegrationTest {
                     .withHeader("Authorization", equalTo(basic))
                     .withHeader("Content-Type", containing("application/json"))
                     .withHeader("X-Source-System", equalTo(OPENMRS_SOURCE))
-                    .withHeader("X-Source-Event-Id", equalTo(PERFORMANCE_ID))
+                    .withHeader("X-Source-Event-Id", equalTo(SOURCE_EVENT_ID))
+                    .withHeader("X-Sygnal-Event-Id", equalTo(EVENT_ID))
+                    .withHeader("X-Sygnal-Occurred-At", equalTo(OCCURRED_AT))
                     .withHeader("X-Correlation-Id", equalTo(MESSAGE_ID))
                     .withoutHeader("X-Facility-Id")
                     .withRequestBody(equalToJson(ENCOUNTER)));
 
-            // The update to CCE
-            List<LoggedRequest> updates = wm.findAll(postRequestedFor(urlEqualTo("/bap/caller/update")));
-            assertThat(updates).hasSize(1);
-            JsonNode u = mapper.readTree(updates.get(0).getBodyAsString());
-            assertThat(u.at("/context/bapId").asText()).isEqualTo("bap.openhim.example.org");
-            assertThat(u.at("/context/bppId").asText()).isEqualTo(CCE_BPP_ID);
-            assertThat(u.at("/context/transactionId").asText()).isEqualTo(CCE_TXN);
-            assertThat(u.at("/context/messageId").asText()).isNotEqualTo(MESSAGE_ID).hasSize(36);
-            assertThat(u.at("/message/contract/id").asText()).isEqualTo(CCE_CONTRACT);
-            assertThat(u.at("/message/contract/commitments/0/id").asText()).isEqualTo("cce-care-coordination");
-            JsonNode perf = u.at("/message/contract/performance");
-            assertThat(perf).hasSize(1);
-            assertThat(perf.get(0).path("id").asText())
-                    .matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}");
-            JsonNode box = perf.get(0).path("performanceAttributes");
+            // The report to CCE, posted to <caller url>/sygnal/event/report
+            List<JsonNode> reports = reportsToCce();
+            assertThat(reports).hasSize(1);
+            JsonNode r = reports.get(0);
+            JsonNode c = r.path("context");
+            assertThat(c.path("version").asText()).isEqualTo("2.0.0");
+            assertThat(c.path("action").asText()).isEqualTo("sygnal/event/report");
+            assertThat(c.path("networkId").asText()).isEqualTo(NETWORK_ID);
+            assertThat(c.path("senderId").asText()).isEqualTo(SELF_ID);
+            assertThat(c.path("receiverId").asText()).isEqualTo(CCE_ID);
+            assertThat(c.path("receiverUri").asText()).isEqualTo(CCE_URI);
+            assertThat(c.path("transactionId").asText()).isNotEqualTo(OPENMRS_TXN).hasSize(36);
+            assertThat(c.path("messageId").asText()).isNotEqualTo(MESSAGE_ID).hasSize(36);
+            assertThat(c.has("bapId") || c.has("bppId") || c.has("bapUri") || c.has("bppUri")).isFalse();
+            assertThat(r.path("message").has("contract")).isFalse();
+
+            JsonNode events = r.at("/message/events");
+            assertThat(events).hasSize(1);
+            JsonNode e = events.get(0);
+            assertThat(e.has("@context")).isFalse();
+            assertThat(e.path("@type").asText()).isEqualTo("sygnal:CoordinationEvent");
+            assertThat(e.path("id").asText()).isEqualTo(EVENT_ID);
+            assertThat(e.path("revision").asInt()).isEqualTo(1);
+            assertThat(e.path("from").path("id").asText()).isEqualTo(SELF_ID);
+            assertThat(e.path("from").path("role").asText()).isEqualTo("PROVIDER");
+            assertThat(e.path("occurredAt").asText()).isEqualTo(OCCURRED_AT);
+            JsonNode box = e.path("eventAttributes");
             assertThat(box.path("@type").asText()).isEqualTo("cce:CceClinicalEvent");
             assertThat(box.path("eventType").asText()).isEqualTo("Encounter");
             assertThat(box.path("patientId").asText()).isEqualTo("1198503150001234");
             assertThat(box.path("facilityId").asText()).isEqualTo("0002");
-            assertThat(box.path("sourceEventId").asText()).isEqualTo(PERFORMANCE_ID);
+            assertThat(box.path("sourceEventId").asText()).isEqualTo(SOURCE_EVENT_ID);
             assertThat(box.path("resource").path("id").asText()).isEqualTo("7d2c9b1e-4f3a-4e8b-9c6d-5a1b2c3d4e5f");
 
-            // Nothing went to the collector
+            // Nothing went to the collector, and nothing but the report went to onix
             wm.verify(0, postRequestedFor(urlEqualTo("/v1/events")));
-
-            // on_update ACCEPTED to the HMIS, after the Ack
-            List<LoggedRequest> onUpdates = onUpdatesSent(5000);
-            assertThat(onUpdates).hasSize(1);
-            JsonNode o = mapper.readTree(onUpdates.get(0).getBodyAsString());
-            assertThat(o.at("/context/action").asText()).isEqualTo("on_update");
-            assertThat(o.at("/context/bapId").asText()).isEqualTo(OPENMRS_BAP_ID);
-            assertThat(o.at("/context/messageId").asText()).isEqualTo(MESSAGE_ID);
-            assertThat(o.at("/context/transactionId").asText()).isEqualTo(OPENMRS_TXN);
-            assertThat(o.at("/message/contract/id").asText()).isEqualTo(OPENMRS_CONTRACT);
-            assertThat(o.at("/message/contract/commitments/0/id").asText()).isEqualTo("hie-event-feed");
-            assertThat(o.at("/message/contract/performance/0/id").asText()).isEqualTo(PERFORMANCE_ID);
-            assertThat(o.at("/message/contract/performance/0/status/code").asText()).isEqualTo("ACCEPTED");
+            onlyReportsWentToOnix(1);
         }
 
         @Test
-        @DisplayName("the same HMIS event gives the same CloudEvent id (resend → CCE DUPLICATE)")
-        void fixedEventId() throws Exception {
+        @DisplayName("a resend keeps the event id (CCE answers Ack for a duplicate) → 202 Ack again")
+        void resendKeepsTheEventId() throws Exception {
             stubCceAck();
-            sendUpdate(update(ENCOUNTER)).andExpect(status().isOk());
-            sendUpdate(update(ENCOUNTER)).andExpect(status().isOk());
-            List<LoggedRequest> updates = wm.findAll(postRequestedFor(urlEqualTo("/bap/caller/update")));
-            assertThat(updates).hasSize(2);
-            assertThat(mapper.readTree(updates.get(0).getBodyAsString()).at("/message/contract/performance/0/id"))
-                    .isEqualTo(mapper.readTree(updates.get(1).getBodyAsString()).at("/message/contract/performance/0/id"));
+            sendReport(report(ENCOUNTER)).andExpect(status().isAccepted());
+            sendReport(report(ENCOUNTER)).andExpect(status().isAccepted())
+                    .andExpect(jsonPath("$.message.status", is("ACK")));
+            List<JsonNode> reports = reportsToCce();
+            assertThat(reports).hasSize(2);
+            assertThat(reports.get(0).at("/message/events/0/id").asText()).isEqualTo(EVENT_ID);
+            assertThat(reports.get(1).at("/message/events/0/id").asText()).isEqualTo(EVENT_ID);
+            assertThat(reports.get(0).at("/context/messageId"))
+                    .isNotEqualTo(reports.get(1).at("/context/messageId"));
         }
 
         @Test
-        @DisplayName("ignored by the pipeline (Bundle) → Nack 400 EVENT_REJECTED, no on_update")
+        @DisplayName("ignored by the pipeline (Bundle) → Nack 400 BIZ_GENERIC_ERROR, nothing sent to CCE")
         void ignored() throws Exception {
             double before = count("cce.emitter.beckn.channel.ignored", "status", "ignored");
-            sendUpdate(update("{\"resourceType\":\"Bundle\",\"type\":\"collection\",\"entry\":[]}"))
+            sendReport(report("{\"resourceType\":\"Bundle\",\"type\":\"collection\",\"entry\":[]}"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.message.status", is("NACK")))
                     .andExpect(jsonPath("$.message.messageId", is(MESSAGE_ID)))
-                    .andExpect(jsonPath("$.message.error.code", is("EVENT_REJECTED")))
+                    .andExpect(jsonPath("$.message.error.code", is("BIZ_GENERIC_ERROR")))
                     .andExpect(jsonPath("$.message.error.message", startsWith("ignored: ")));
-            wm.verify(0, postRequestedFor(urlEqualTo("/bap/caller/update")));
-            assertThat(onUpdatesSent(300)).isEmpty();
+            onlyReportsWentToOnix(0);
             assertThat(count("cce.emitter.beckn.channel.ignored", "status", "ignored")).isEqualTo(before + 1);
         }
 
         @Test
-        @DisplayName("no patient reference → Nack 400 EVENT_REJECTED with PATIENT_ID_NOT_FOUND")
+        @DisplayName("no patient reference → Nack 400 BIZ_GENERIC_ERROR with PATIENT_ID_NOT_FOUND")
         void noPatient() throws Exception {
-            sendUpdate(update("{\"resourceType\":\"Encounter\",\"id\":\"e1\",\"status\":\"finished\"}"))
+            sendReport(report("{\"resourceType\":\"Encounter\",\"id\":\"e1\",\"status\":\"finished\"}"))
                     .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.message.error.code", is("EVENT_REJECTED")))
+                    .andExpect(jsonPath("$.message.error.code", is("BIZ_GENERIC_ERROR")))
                     .andExpect(jsonPath("$.message.error.message", startsWith("PATIENT_ID_NOT_FOUND")));
         }
 
         @Test
-        @DisplayName("channel answers 5xx → Nack 500 UNAVAILABLE")
+        @DisplayName("channel answers 5xx → Nack 500 NET_DOWNSTREAM_UNAVAILABLE (the HMIS sends it again)")
         void channel5xx() throws Exception {
             wm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo("/inbound")).atPriority(1)
                     .willReturn(aResponse().withStatus(503).withBody("Service Unavailable")));
-            sendUpdate(update(ENCOUNTER))
+            sendReport(report(ENCOUNTER))
                     .andExpect(status().isInternalServerError())
                     .andExpect(jsonPath("$.message.status", is("NACK")))
                     .andExpect(jsonPath("$.message.messageId", is(MESSAGE_ID)))
-                    .andExpect(jsonPath("$.message.error.code", is("UNAVAILABLE")));
-            assertThat(onUpdatesSent(300)).isEmpty();
+                    .andExpect(jsonPath("$.message.error.code", is("NET_DOWNSTREAM_UNAVAILABLE")));
         }
 
         @Test
-        @DisplayName("OpenHIM refuses the client (401) → Nack 500 HIE_ERROR")
+        @DisplayName("OpenHIM refuses the client (401) → Nack 500 NET_INTERNAL_ERROR")
         void channel401() throws Exception {
             wm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo("/inbound")).atPriority(1)
                     .willReturn(aResponse().withStatus(401).withBody("Unauthorized")));
-            sendUpdate(update(ENCOUNTER))
+            sendReport(report(ENCOUNTER))
                     .andExpect(status().isInternalServerError())
-                    .andExpect(jsonPath("$.message.error.code", is("HIE_ERROR")))
+                    .andExpect(jsonPath("$.message.error.code", is("NET_INTERNAL_ERROR")))
                     .andExpect(jsonPath("$.message.error.message", containsString("401")));
         }
 
         @Test
-        @DisplayName("CCE NACK EVENT_REJECTED → Nack 400 EVENT_REJECTED with CCE's text")
-        void cceEventRejected() throws Exception {
-            stubCceNack(400, "EVENT_REJECTED", "Payload validation failed");
-            sendUpdate(update(ENCOUNTER))
+        @DisplayName("CCE NACK BIZ_GENERIC_ERROR → Nack 400 BIZ_GENERIC_ERROR with CCE's text")
+        void cceRefusedEvent() throws Exception {
+            stubCceNack(400, "BIZ_GENERIC_ERROR", "Payload validation failed");
+            sendReport(report(ENCOUNTER))
                     .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.message.error.code", is("EVENT_REJECTED")))
+                    .andExpect(jsonPath("$.message.error.code", is("BIZ_GENERIC_ERROR")))
                     .andExpect(jsonPath("$.message.error.message", is("CCE: Payload validation failed")));
-            assertThat(onUpdatesSent(300)).isEmpty();
         }
 
         @Test
-        @DisplayName("CCE NACK BAD_REQUEST (our own update broke a rule) → Nack 500 HIE_ERROR")
-        void cceBadRequest() throws Exception {
-            stubCceNack(400, "BAD_REQUEST", "performance[0].id is longer than 50 characters");
-            sendUpdate(update(ENCOUNTER))
-                    .andExpect(status().isInternalServerError())
-                    .andExpect(jsonPath("$.message.error.code", is("HIE_ERROR")))
+        @DisplayName("CCE NACK SCH_* → Nack 400 BIZ_GENERIC_ERROR naming CCE's code")
+        void cceSchemaRefusal() throws Exception {
+            stubCceNack(400, "SCH_REQUIRED_FIELD_MISSING", "eventAttributes.patientId is missing");
+            sendReport(report(ENCOUNTER))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message.error.code", is("BIZ_GENERIC_ERROR")))
                     .andExpect(jsonPath("$.message.error.message",
-                            is("CCE BAD_REQUEST: performance[0].id is longer than 50 characters")));
+                            is("CCE SCH_REQUIRED_FIELD_MISSING: eventAttributes.patientId is missing")));
         }
 
         @Test
-        @DisplayName("CCE 500 → Nack 500 UNAVAILABLE, one try only")
-        void cce500() throws Exception {
-            stubCceNack(500, "COLLECTOR_UNAVAILABLE", "Send it again later.");
-            sendUpdate(update(ENCOUNTER))
+        @DisplayName("CCE NACK CTX_* (the HIE's own settings) → Nack 500 NET_INTERNAL_ERROR")
+        void cceRefusedHieContext() throws Exception {
+            stubCceNack(400, "CTX_INVALID_FIELD", "context.receiverId is 'x', but CCE is 'y'");
+            sendReport(report(ENCOUNTER))
                     .andExpect(status().isInternalServerError())
-                    .andExpect(jsonPath("$.message.error.code", is("UNAVAILABLE")));
-            wm.verify(1, postRequestedFor(urlEqualTo("/bap/caller/update")));
+                    .andExpect(jsonPath("$.message.error.code", is("NET_INTERNAL_ERROR")))
+                    .andExpect(jsonPath("$.message.error.message", startsWith("CCE CTX_INVALID_FIELD: ")));
         }
 
         @Test
-        @DisplayName("unknown subscriber → Nack 400 BAD_REQUEST, nothing sent to the channel")
-        void unknownSubscriber() throws Exception {
-            sendUpdate(update("bap.other.example.org", OPENMRS_CONTRACT, entry(PERFORMANCE_ID, ENCOUNTER)))
+        @DisplayName("CCE 500 → Nack 500 NET_DOWNSTREAM_UNAVAILABLE, one try only")
+        void cce500() throws Exception {
+            stubCceNack(500, "NET_DOWNSTREAM_UNAVAILABLE", "Send it again later.");
+            sendReport(report(ENCOUNTER))
+                    .andExpect(status().isInternalServerError())
+                    .andExpect(jsonPath("$.message.error.code", is("NET_DOWNSTREAM_UNAVAILABLE")));
+            wm.verify(1, postRequestedFor(urlEqualTo(CCE_REPORT)));
+        }
+
+        @Test
+        @DisplayName("onix gives no answer in time → Nack 500 NET_DOWNSTREAM_UNAVAILABLE, before the channel gives up")
+        void cceTimeout() throws Exception {
+            wm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo(CCE_REPORT))
+                    .willReturn(aResponse().withStatus(202).withHeader("Content-Type", "application/json")
+                            .withBody("{\"message\":{\"status\":\"ACK\",\"messageId\":\"x\"}}")
+                            .withFixedDelay(ONIX_TIMEOUT_MS + 1000)));
+            long started = System.currentTimeMillis();
+            sendReport(report(ENCOUNTER))
+                    .andExpect(status().isInternalServerError())
+                    .andExpect(jsonPath("$.message.error.code", is("NET_DOWNSTREAM_UNAVAILABLE")));
+            assertThat(System.currentTimeMillis() - started).isLessThan(8000);
+        }
+
+        @Test
+        @DisplayName("unknown sender → Nack 400 CTX_INVALID_FIELD, nothing sent to the channel")
+        void unknownSender() throws Exception {
+            sendReport(report("bap.other.example.org", SELF_ID, event(EVENT_ID, ENCOUNTER)))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.message.messageId", is(MESSAGE_ID)))
-                    .andExpect(jsonPath("$.message.error.code", is("BAD_REQUEST")));
+                    .andExpect(jsonPath("$.message.error.code", is("CTX_INVALID_FIELD")));
             wm.verify(0, postRequestedFor(urlEqualTo("/inbound")));
         }
 
         @Test
-        @DisplayName("other actions → Nack 400 NOT_SUPPORTED")
-        void otherAction() throws Exception {
-            mockMvc.perform(post("/beckn/bpp-webhook/confirm").contentType(MediaType.APPLICATION_JSON)
-                            .content(update(ENCOUNTER).replace("\"action\": \"update\"", "\"action\": \"confirm\"")))
+        @DisplayName("a report for another receiver → Nack 400 CTX_INVALID_FIELD")
+        void otherReceiver() throws Exception {
+            sendReport(report(OPENMRS_ID, "bap.other-hie.example.org", event(EVENT_ID, ENCOUNTER)))
                     .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.message.error.code", is("NOT_SUPPORTED")));
+                    .andExpect(jsonPath("$.message.error.code", is("CTX_INVALID_FIELD")));
+            wm.verify(0, postRequestedFor(urlEqualTo("/inbound")));
         }
 
         @Test
-        @DisplayName("a body that is not JSON → Nack 400 BAD_REQUEST")
+        @DisplayName("an event id that is not a UUID → Nack 400 SCH_SCHEMA_VALIDATION_FAILED")
+        void eventIdNotAUuid() throws Exception {
+            sendReport(report(OPENMRS_ID, SELF_ID, event("enc-1", ENCOUNTER)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message.error.code", is("SCH_SCHEMA_VALIDATION_FAILED")));
+            wm.verify(0, postRequestedFor(urlEqualTo("/inbound")));
+        }
+
+        @Test
+        @DisplayName("another action in the context → Nack 400 CTX_ACTION_MISMATCH")
+        void otherAction() throws Exception {
+            sendReport(report(ENCOUNTER).replace("\"action\": \"sygnal/event/report\"", "\"action\": \"update\""))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message.error.code", is("CTX_ACTION_MISMATCH")));
+            wm.verify(0, postRequestedFor(urlEqualTo("/inbound")));
+        }
+
+        @Test
+        @DisplayName("a body that is not JSON → Nack 400 SCH_INVALID_JSON")
         void notJson() throws Exception {
-            mockMvc.perform(post("/beckn/bpp-webhook/update").contentType(MediaType.APPLICATION_JSON).content("{nope"))
+            mockMvc.perform(post(ENDPOINT).contentType(MediaType.APPLICATION_JSON).content("{nope"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.message.status", is("NACK")))
-                    .andExpect(jsonPath("$.message.error.code", is("BAD_REQUEST")));
+                    .andExpect(jsonPath("$.message.error.code", is("SCH_INVALID_JSON")));
+        }
+
+        @Test
+        @DisplayName("the old Beckn webhooks are gone")
+        void oldWebhooksAreGone() throws Exception {
+            for (String path : List.of("/beckn/bpp-webhook/update", "/beckn/bap-webhook/on_update")) {
+                mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(report(ENCOUNTER)))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus() / 100).isNotEqualTo(2));
+            }
+            wm.verify(0, postRequestedFor(urlEqualTo("/inbound")));
         }
     }
 
-    // ==================== Beckn output on /inbound ====================
+    // ==================== HIE -> CCE: the Sygnal output on /inbound ====================
 
     @Nested
     @DisplayName("POST /inbound for a source with output: beckn")
-    class BecknOutput {
+    class SygnalOutput {
 
-        private org.springframework.test.web.servlet.ResultActions sendInbound() throws Exception {
+        private ResultActions sendInbound() throws Exception {
             return mockMvc.perform(post("/inbound").contentType(MediaType.APPLICATION_JSON)
                     .header("X-OpenHIM-ClientID", "cce-beckn-endpoint")
                     .header("X-Source-System", OPENMRS_SOURCE)
-                    .header("X-Source-Event-Id", PERFORMANCE_ID)
+                    .header("X-Source-Event-Id", SOURCE_EVENT_ID)
                     .content(ENCOUNTER));
         }
 
         @Test
-        @DisplayName("CCE ACK → 202, like a collector accept")
+        @DisplayName("CCE ACK → 202, like a collector accept; orchestration names the Sygnal path")
         void ack() throws Exception {
             stubCceAck();
             sendInbound()
                     .andExpect(status().isAccepted())
                     .andExpect(jsonPath("$.status", is("Successful")))
                     .andExpect(jsonPath("$.response.status", is(202)))
-                    .andExpect(jsonPath("$.orchestrations[0].name", is("Forward to CCE over Beckn")))
-                    .andExpect(jsonPath("$.orchestrations[0].request.path", is("/bap/caller/update")));
+                    .andExpect(jsonPath("$.orchestrations[0].name", is("Forward to CCE over Sygnal")))
+                    .andExpect(jsonPath("$.orchestrations[0].request.path", is(CCE_REPORT)))
+                    .andExpect(jsonPath("$.orchestrations[0].response.status", is(202)));
             wm.verify(0, postRequestedFor(urlEqualTo("/v1/events")));
+            // Without X-Sygnal-Event-Id the event id is derived from the source event id, as before
+            assertThat(reportsToCce().get(0).at("/message/events/0/id").asText())
+                    .matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}");
+            onlyReportsWentToOnix(1);
         }
 
         @Test
-        @DisplayName("CCE NACK EVENT_REJECTED → 400 COLLECTOR_CLIENT_ERROR 'CCE EVENT_REJECTED: …'")
-        void nackEventRejected() throws Exception {
-            stubCceNack(400, "EVENT_REJECTED", "Payload validation failed");
+        @DisplayName("CCE NACK 400 → 400 COLLECTOR_CLIENT_ERROR 'CCE <code>: …'")
+        void nack() throws Exception {
+            stubCceNack(400, "BIZ_GENERIC_ERROR", "Payload validation failed");
             sendInbound()
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error.code", is("COLLECTOR_CLIENT_ERROR")))
-                    .andExpect(jsonPath("$.error.message", is("CCE EVENT_REJECTED: Payload validation failed")));
-            wm.verify(1, postRequestedFor(urlEqualTo("/bap/caller/update")));
-        }
-
-        @Test
-        @DisplayName("CCE NACK BAD_REQUEST → 400 COLLECTOR_CLIENT_ERROR 'CCE BAD_REQUEST: …'")
-        void nackBadRequest() throws Exception {
-            stubCceNack(400, "BAD_REQUEST", "context.bapId is missing");
-            sendInbound()
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error.code", is("COLLECTOR_CLIENT_ERROR")))
-                    .andExpect(jsonPath("$.error.message", is("CCE BAD_REQUEST: context.bapId is missing")));
+                    .andExpect(jsonPath("$.error.message", is("CCE BIZ_GENERIC_ERROR: Payload validation failed")));
+            wm.verify(1, postRequestedFor(urlEqualTo(CCE_REPORT)));
         }
 
         @Test
         @DisplayName("CCE 500 → 502 COLLECTOR_FORWARDING_ERROR, no retry")
         void serverError() throws Exception {
-            stubCceNack(500, "INTERNAL_ERROR", "later");
+            stubCceNack(500, "NET_INTERNAL_ERROR", "later");
             sendInbound()
                     .andExpect(status().isBadGateway())
                     .andExpect(jsonPath("$.error.code", is("COLLECTOR_FORWARDING_ERROR")));
-            wm.verify(1, postRequestedFor(urlEqualTo("/bap/caller/update")));
+            wm.verify(1, postRequestedFor(urlEqualTo(CCE_REPORT)));
         }
 
         @Test
-        @DisplayName("onix-bap timeout → 502 COLLECTOR_FORWARDING_ERROR, no retry")
+        @DisplayName("onix timeout → 502 COLLECTOR_FORWARDING_ERROR, no retry")
         void timeout() throws Exception {
-            wm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo("/bap/caller/update"))
+            wm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo(CCE_REPORT))
                     .willReturn(okJson("{\"message\":{\"status\":\"ACK\",\"messageId\":\"x\"}}")
                             .withFixedDelay(ONIX_TIMEOUT_MS + 1000)));
             sendInbound()
                     .andExpect(status().isBadGateway())
                     .andExpect(jsonPath("$.error.code", is("COLLECTOR_FORWARDING_ERROR")));
-            wm.verify(1, postRequestedFor(urlEqualTo("/bap/caller/update")));
+            wm.verify(1, postRequestedFor(urlEqualTo(CCE_REPORT)));
         }
     }
 
@@ -454,7 +501,7 @@ class BecknIntegrationTest {
                     .withHeader("Authorization", equalTo("Bearer test-token"))
                     .withRequestBody(matchingJsonPath("$.source", equalTo("ebuzima")))
                     .withRequestBody(matchingJsonPath("$.facilityid", equalTo("0002"))));
-            wm.verify(0, postRequestedFor(urlEqualTo("/bap/caller/update")));
+            onlyReportsWentToOnix(0);
         }
 
         @Test
@@ -466,73 +513,6 @@ class BecknIntegrationTest {
                             .header("X-OpenHIM-ClientID", "ebuzima-emr-client").content(ENCOUNTER))
                     .andExpect(status().isBadGateway());
             wm.verify(3, postRequestedFor(urlEqualTo("/v1/events")));
-        }
-    }
-
-    // ==================== Callback endpoint ====================
-
-    @Nested
-    @DisplayName("POST /beckn/bap-webhook/{action}")
-    class BapWebhook {
-
-        private String onUpdate(String bppId, String contractId, String status) {
-            return """
-                    { "context": { "version": "2.0.0", "action": "on_update", "bapId": "bap.openhim.example.org",
-                                   "bppId": "%s", "transactionId": "%s", "messageId": "%s",
-                                   "timestamp": "2026-11-13T08:00:37Z" },
-                      "message": { "contract": { "id": "%s", "status": { "code": "ACTIVE" },
-                        "commitments": [ { "id": "cce-care-coordination" } ],
-                        "performance": [ { "id": "b2d6e8f0-1a3c-5e7f-9b1d-3f5a7c9e1b3d", "status": { "code": "%s" } } ] } } }
-                    """.formatted(bppId, CCE_TXN, MESSAGE_ID, contractId, status);
-        }
-
-        @Test
-        @DisplayName("CCE's on_update ACCEPTED → Ack")
-        void accepted() throws Exception {
-            mockMvc.perform(post("/beckn/bap-webhook/on_update").contentType(MediaType.APPLICATION_JSON)
-                            .content(onUpdate(CCE_BPP_ID, CCE_CONTRACT, "ACCEPTED")))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.message.status", is("ACK")))
-                    .andExpect(jsonPath("$.message.messageId", is(MESSAGE_ID)));
-        }
-
-        @Test
-        @DisplayName("CCE's on_update DUPLICATE → Ack, counts cce.emitter.events.duplicate")
-        void duplicate() throws Exception {
-            double before = count("cce.emitter.events.duplicate");
-            mockMvc.perform(post("/beckn/bap-webhook/on_update").contentType(MediaType.APPLICATION_JSON)
-                            .content(onUpdate(CCE_BPP_ID, CCE_CONTRACT, "DUPLICATE")))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.message.status", is("ACK")));
-            assertThat(count("cce.emitter.events.duplicate")).isEqualTo(before + 1);
-        }
-
-        @Test
-        @DisplayName("on_update from another bppId → Nack 400 BAD_REQUEST")
-        void otherBpp() throws Exception {
-            mockMvc.perform(post("/beckn/bap-webhook/on_update").contentType(MediaType.APPLICATION_JSON)
-                            .content(onUpdate("bpp.other.org", CCE_CONTRACT, "ACCEPTED")))
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.message.error.code", is("BAD_REQUEST")));
-        }
-
-        @Test
-        @DisplayName("on_update on another contract id → Ack (no contract id is issued without confirm)")
-        void otherContract() throws Exception {
-            mockMvc.perform(post("/beckn/bap-webhook/on_update").contentType(MediaType.APPLICATION_JSON)
-                            .content(onUpdate(CCE_BPP_ID, "other", "ACCEPTED")))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.message.status", is("ACK")));
-        }
-
-        @Test
-        @DisplayName("on_status (CCE alerts) → Nack 400 NOT_SUPPORTED")
-        void onStatus() throws Exception {
-            mockMvc.perform(post("/beckn/bap-webhook/on_status").contentType(MediaType.APPLICATION_JSON)
-                            .content(onUpdate(CCE_BPP_ID, CCE_CONTRACT, "ACCEPTED")))
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.message.error.code", is("NOT_SUPPORTED")))
-                    .andExpect(jsonPath("$.message.messageId", is(MESSAGE_ID)));
         }
     }
 }

@@ -2,6 +2,7 @@ package org.openphc.cce.emitter.beckn;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 import static org.openphc.cce.emitter.beckn.BecknTestSupport.*;
 
 import java.util.List;
@@ -15,7 +16,7 @@ import org.openphc.cce.emitter.adaptor.BecknInboundUnwrapper;
 import org.openphc.cce.emitter.exception.BecknNackException;
 import org.springframework.http.HttpStatus;
 
-/** Steps 1–4 of spec §3.1 and the headers of §3.2. */
+/** The checks of spec §3.1 and the headers of §3.2. */
 class BecknInboundUnwrapperTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -26,87 +27,130 @@ class BecknInboundUnwrapperTest {
         return mapper.readTree(s);
     }
 
-    private void assertBadRequest(String body, String textPart) {
+    private void assertBadRequest(String body, String code, String textPart) {
         assertThatThrownBy(() -> unwrapper.unwrap(json(body)))
                 .isInstanceOf(BecknNackException.class)
                 .satisfies(e -> {
                     BecknNackException n = (BecknNackException) e;
-                    assertThat(n.getCode()).isEqualTo("BAD_REQUEST");
+                    assertThat(n.getCode()).isEqualTo(code);
                     assertThat(n.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
                 })
                 .hasMessageContaining(textPart);
     }
 
-    @Test
-    @DisplayName("unwraps a valid update: the resource as it is, and the channel headers")
-    void unwrapsValidUpdate() throws Exception {
-        BecknInboundUnwrapper.UnwrappedEvent event = unwrapper.unwrap(json(update(ENCOUNTER)));
+    private static String reportWith(String event) {
+        return report(OPENMRS_ID, SELF_ID, event);
+    }
 
-        assertThat(event.subscriber().subscriberId()).isEqualTo(OPENMRS_BAP_ID);
-        assertThat(event.performanceId()).isEqualTo(PERFORMANCE_ID);
+    @Test
+    @DisplayName("unwraps a valid report: the resource as it is, and the channel headers")
+    void unwrapsValidReport() throws Exception {
+        BecknInboundUnwrapper.UnwrappedEvent event = unwrapper.unwrap(json(report(ENCOUNTER)));
+
+        assertThat(event.subscriber().subscriberId()).isEqualTo(OPENMRS_ID);
+        assertThat(event.eventId()).isEqualTo(EVENT_ID);
+        assertThat(event.occurredAt()).isEqualTo(OCCURRED_AT);
         assertThat(event.messageId()).isEqualTo(MESSAGE_ID);
         assertThat(event.transactionId()).isEqualTo(OPENMRS_TXN);
         assertThat(event.eventType()).isEqualTo("Encounter");
         assertThat(event.resource()).isEqualTo(json(ENCOUNTER));
         assertThat(event.headers()).containsExactly(
-                org.assertj.core.api.Assertions.entry("X-Source-System", OPENMRS_SOURCE),
-                org.assertj.core.api.Assertions.entry("X-Source-Event-Id", PERFORMANCE_ID),
-                org.assertj.core.api.Assertions.entry("X-Correlation-Id", MESSAGE_ID));
+                entry("X-Source-System", OPENMRS_SOURCE),
+                entry("X-Source-Event-Id", SOURCE_EVENT_ID),
+                entry("X-Sygnal-Event-Id", EVENT_ID),
+                entry("X-Sygnal-Occurred-At", OCCURRED_AT),
+                entry("X-Correlation-Id", MESSAGE_ID));
         assertThat(event.headers()).doesNotContainKey("X-Facility-Id");
     }
 
     @Test
-    void unknownSubscriber() {
-        assertBadRequest(update("bap.unknown.example.org", OPENMRS_CONTRACT, entry(PERFORMANCE_ID, ENCOUNTER)),
-                "Unknown subscriber");
+    @DisplayName("without sourceEventId the event id is the source event id; without occurredAt, context.timestamp")
+    void fallbacks() throws Exception {
+        String e = event(EVENT_ID, ENCOUNTER)
+                .replace("\"sourceEventId\": \"" + SOURCE_EVENT_ID + "\",", "")
+                .replace("\"occurredAt\": \"" + OCCURRED_AT + "\",", "");
+        BecknInboundUnwrapper.UnwrappedEvent event = unwrapper.unwrap(json(reportWith(e)));
+        assertThat(event.headers()).containsEntry("X-Source-Event-Id", EVENT_ID);
+        assertThat(event.occurredAt()).isEqualTo("2026-11-13T08:00:35Z");
     }
 
     @Test
-    void missingBapId() {
-        assertBadRequest(update("", OPENMRS_CONTRACT, entry(PERFORMANCE_ID, ENCOUNTER)), "context.bapId");
+    void unknownSender() {
+        assertBadRequest(report("bap.unknown.example.org", SELF_ID, event(EVENT_ID, ENCOUNTER)),
+                "CTX_INVALID_FIELD", "is not a subscriber of this HIE");
     }
 
     @Test
-    void anyContractIdIsAccepted() throws Exception {
-        var event = unwrapper.unwrap(json(update(OPENMRS_BAP_ID, "hmis-chosen-contract", entry(PERFORMANCE_ID, ENCOUNTER))));
-        assertThat(event.contractId()).isEqualTo("hmis-chosen-contract");
+    void missingSender() {
+        assertBadRequest(report("", SELF_ID, event(EVENT_ID, ENCOUNTER)), "CTX_MISSING_FIELD", "context.senderId");
     }
 
     @Test
-    void missingContractId() {
-        assertBadRequest(update(OPENMRS_BAP_ID, "", entry(PERFORMANCE_ID, ENCOUNTER)), "message.contract.id is missing");
+    void reportForAnotherReceiver() {
+        assertBadRequest(report(OPENMRS_ID, "bap.other-hie.example.org", event(EVENT_ID, ENCOUNTER)),
+                "CTX_INVALID_FIELD", "context.receiverId");
     }
 
     @Test
-    void noPerformanceEntry() {
-        assertBadRequest(update(OPENMRS_BAP_ID, OPENMRS_CONTRACT, ""), "exactly one entry");
+    void noEvent() {
+        assertBadRequest(reportWith(""), "SCH_SCHEMA_VALIDATION_FAILED", "exactly one event");
     }
 
     @Test
-    void twoPerformanceEntries() {
-        assertBadRequest(update(OPENMRS_BAP_ID, OPENMRS_CONTRACT,
-                entry(PERFORMANCE_ID, ENCOUNTER) + "," + entry("second", ENCOUNTER)), "exactly one entry");
+    void twoEvents() {
+        assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER) + "," + event("4a6c1c1e-8a53-4b0e-9d7a-2b6f4e1a9c10", ENCOUNTER)),
+                "SCH_SCHEMA_VALIDATION_FAILED", "exactly one event");
     }
 
     @Test
-    void missingPerformanceId() {
-        assertBadRequest(update(OPENMRS_BAP_ID, OPENMRS_CONTRACT, entry("", ENCOUNTER)), "performance[0].id");
+    void missingEventId() {
+        assertBadRequest(reportWith(event("", ENCOUNTER)), "SCH_REQUIRED_FIELD_MISSING", "events[0].id");
+    }
+
+    @Test
+    void eventIdNotAUuid() {
+        assertBadRequest(reportWith(event("enc-1", ENCOUNTER)), "SCH_SCHEMA_VALIDATION_FAILED", "UUID");
+    }
+
+    @Test
+    void revisionOtherThanOne() {
+        assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER).replace("\"revision\": 1", "\"revision\": 2")),
+                "SCH_SCHEMA_VALIDATION_FAILED", "revision");
+    }
+
+    @Test
+    void fromIsNotTheSender() {
+        assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER).replace(
+                        "\"from\": { \"id\": \"" + OPENMRS_ID + "\"", "\"from\": { \"id\": \"someone.else\"")),
+                "SCH_SCHEMA_VALIDATION_FAILED", "from.id");
+    }
+
+    @Test
+    void occurredAtNotATime() {
+        assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER).replace(OCCURRED_AT, "yesterday")),
+                "SCH_SCHEMA_VALIDATION_FAILED", "occurredAt");
     }
 
     @Test
     void wrongBoxType() {
-        assertBadRequest(update(OPENMRS_BAP_ID, OPENMRS_CONTRACT,
-                entry(PERFORMANCE_ID, ENCOUNTER).replace("cce:CceClinicalEvent", "cce:Other")), "@type");
+        assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER).replace("cce:CceClinicalEvent", "cce:Other")),
+                "SCH_TYPE_NOT_SUPPORTED", "@type");
     }
 
     @Test
     void resourceWithoutResourceType() {
-        assertBadRequest(update(OPENMRS_BAP_ID, OPENMRS_CONTRACT, entry(PERFORMANCE_ID, "{\"id\":\"x\"}")),
-                "resourceType");
+        assertBadRequest(reportWith(event(EVENT_ID, "{\"id\":\"x\"}")), "SCH_SCHEMA_VALIDATION_FAILED", "resourceType");
     }
 
     @Test
     void resourceNotAnObject() {
-        assertBadRequest(update(OPENMRS_BAP_ID, OPENMRS_CONTRACT, entry(PERFORMANCE_ID, "\"text\"")), "resource");
+        assertBadRequest(reportWith(event(EVENT_ID, "\"text\"")), "SCH_SCHEMA_VALIDATION_FAILED", "resource");
+    }
+
+    @Test
+    @DisplayName("a sourceEventId that cannot be a header value is replaced by the event id")
+    void unsafeSourceEventId() throws Exception {
+        String e = event(EVENT_ID, ENCOUNTER).replace(SOURCE_EVENT_ID, "a\\nb");
+        assertThat(unwrapper.unwrap(json(reportWith(e))).headers()).containsEntry("X-Source-Event-Id", EVENT_ID);
     }
 }

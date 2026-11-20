@@ -580,53 +580,48 @@ Integration tests use `@ActiveProfiles("integration")` with `application-integra
 
 **FHIR Fixtures:** `src/test/resources/fhir/encounter-visit.json`, `observation-lab.json`
 
-## 13. Running with Beckn (Proposal)
+## 13. Running with Sygnal (Proposal)
 
-> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md).
+> **Status:** Built on branch `sygnal-actions`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). The settings keep the `beckn.*` prefix.
 
-By default nothing in this guide changes: `beckn.enabled` is `false` and every source uses `output: collector`, so events go from OpenHIM to the CCE Collector as above.
+With `OPENHIM_EMITTER_BECKN_ENABLED=false` nothing in this guide changes: sources without an explicit `output` use the collector, so events go from OpenHIM to the CCE Collector as above.
 
 ### 13.1 Switches
 
 | Setting | Env var | Effect |
 |---------|---------|--------|
-| `beckn.enabled` | `OPENHIM_EMITTER_BECKN_ENABLED` | `true` registers `/beckn/bpp-webhook/{action}` and `/beckn/bap-webhook/{action}` and allows `output: beckn` |
+| `beckn.enabled` | `OPENHIM_EMITTER_BECKN_ENABLED` | `true` registers `POST /sygnal/event/report` and allows `output: beckn` |
 | `cce.emitter.sources.<key>.output` | — (YAML) | `collector` or `beckn`, per source. Unset: follows `beckn.enabled` |
 
-Both are needed for the full Beckn path. With `beckn.enabled=true` and all sources on `collector`, the Beckn endpoints work but every event still goes to the collector.
+Both are needed for the full Sygnal path. With `beckn.enabled=true` and all sources on `collector`, the Sygnal endpoint works but every event still goes to the collector.
+
+With `beckn.enabled=true` the adaptor refuses to start unless the Sygnal settings are set and consistent (`BecknStartupValidator`, [Data Dictionary §9.4](data-dictionary.md#94-sygnal-settings)).
 
 ### 13.2 Dependencies
 
 | Dependency | Local option |
 |------------|--------------|
-| `openhim-onix` (`onix-bap`, `onix-bpp`) | The HIE team's containers, published on host ports that do not clash with OpenHIM (5000, 5001, 8080) or this adaptor (8082). Or WireMock stubs (below) |
-| OpenHIM channel for Beckn | A channel with `/inbound` as **primary** route ([OpenHIM Channel Setup §9](openhim-channel-setup.md#9-beckn-channel-proposal)). For a quick test, `beckn.openhim-channel.url` can point at `http://localhost:8082/inbound` directly; the answer is then the `application/json+openhim` envelope, which `OpenHimChannelClient` unpacks the same way OpenHIM Core does |
-| CCE side (`cce-onix`, `cce-beckn-service`) | Not needed locally when `onix-bap` is stubbed |
+| `onix-openhim` | The HIE team's onix container (listens on 8082 in its container; modules `/sygnal/receiver/` and `/sygnal/caller/`), published on a host port that does not clash with OpenHIM (5000, 5001, 8080) or this adaptor (8082). Or a WireMock stub (below) |
+| OpenHIM channel for Sygnal | A channel with `/inbound` as **primary** route ([OpenHIM Channel Setup §9](openhim-channel-setup.md#9-beckn-channel-proposal)). For a quick test, `beckn.openhim-channel.url` can point at `http://localhost:8082/inbound` directly; the answer is then the `application/json+openhim` envelope, which `OpenHimChannelClient` unpacks the same way OpenHIM Core does |
+| CCE side (`onix-cce`, `cce-beckn-service`) | Not needed locally when `onix-openhim`'s caller is stubbed |
 
-WireMock stubs for the onix callers (in the existing WireMock container). They answer in the shape `cce-beckn-service` uses, and echo the request's `messageId` as the real answer does:
+WireMock stub for `onix-openhim`'s caller (in the existing WireMock container). It answers in the shape `cce-beckn-service` uses, and echoes the request's `messageId` as the real answer does. There is no callback, so no other stub is needed:
 
 ```json
-{ "request":  { "method": "POST", "urlPath": "/bap/caller/update" },
-  "response": { "status": 200, "transformers": ["response-template"],
+{ "request":  { "method": "POST", "urlPath": "/sygnal/caller/sygnal/event/report" },
+  "response": { "status": 202, "transformers": ["response-template"],
                 "headers": { "Content-Type": "application/json" },
                 "body": "{ \"message\": { \"status\": \"ACK\", \"messageId\": \"{{jsonPath request.body '$.context.messageId'}}\" } }" } }
 ```
 
-```json
-{ "request":  { "method": "POST", "urlPath": "/bpp/caller/on_update" },
-  "response": { "status": 200, "transformers": ["response-template"],
-                "headers": { "Content-Type": "application/json" },
-                "body": "{ \"message\": { \"status\": \"ACK\", \"messageId\": \"{{jsonPath request.body '$.context.messageId'}}\" } }" } }
-```
-
-To test CCE's other answers, swap the `/bap/caller/update` stub's status and body:
+To test CCE's other answers, swap the stub's status and body:
 
 | CCE answer to test | Status | Body `message` |
 |--------------------|--------|----------------|
-| Refusal | 400 | `{ "status": "NACK", "messageId": "…", "error": { "code": "EVENT_REJECTED", "message": "Payload validation failed: …" } }` |
-| Broken rule | 400 | `{ "status": "NACK", "messageId": "…", "error": { "code": "BAD_REQUEST", "message": "performance[0].id is longer than 50 characters" } }` |
-| May pass | 500 | `{ "status": "NACK", "messageId": "…", "error": { "code": "COLLECTOR_UNAVAILABLE", "message": "The event could not be passed to CCE. Send it again later." } }` |
-| Slow CCE (`"fixedDelayMilliseconds": 17000` on the stub) | 200 | `{ "status": "ACK", "messageId": "…" }`. Must still succeed with the timeouts in [Beckn Integration §8.3](beckn-integration.md#83-every-answer-returns-in-the-same-call) |
+| Refusal | 400 | `{ "status": "NACK", "messageId": "…", "error": { "code": "BIZ_GENERIC_ERROR", "message": "Payload validation failed: …" } }` |
+| HIE context refused | 400 | `{ "status": "NACK", "messageId": "…", "error": { "code": "CTX_INVALID_FIELD", "message": "context.receiverId is not this CCE" } }` |
+| May pass | 500 | `{ "status": "NACK", "messageId": "…", "error": { "code": "NET_DOWNSTREAM_UNAVAILABLE", "message": "The event could not be passed to CCE. Send it again later." } }` |
+| Slow CCE (`"fixedDelayMilliseconds": 17000` on the stub) | 202 | `{ "status": "ACK", "messageId": "…" }`. Must still succeed with the timeouts in [Beckn Integration §8.3](beckn-integration.md#83-every-answer-returns-in-the-same-call) |
 
 ### 13.3 Local settings (`application-dev.yml`)
 
@@ -635,30 +630,21 @@ beckn:
   enabled: true
   # schema-base-url: default, https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema
   onix:
-    bap-caller-url: http://localhost:5055/bap/caller
-    bpp-caller-url: http://localhost:5055/bpp/caller
-    timeout: 25000
+    caller-url: http://localhost:5055/sygnal/caller     # WireMock; the adaptor appends /sygnal/event/report
+    timeout: 20000
   self:
-    # network-id: optional, goes into context.networkId
-    bap-id: bap.openhim.example.org
-    bap-uri: http://localhost:8082/beckn/bap-webhook
-    bpp-id: bpp.openhim.example.org
-    bpp-uri: http://localhost:8082/beckn/bpp-webhook
+    id: bap.openhim.nextsteps.mdtlabs.org
+    network-id: sygnal.nextsteps.mdtlabs.org/sygnal_demo_network_registry
   cce:
-    bpp-id: bpp.mdtlabs.org
-    bpp-uri: https://cce.example.org/bpp/receiver
-    contract-id: 9d4e2f6a-1b3c-4d5e-8f70-b1c2d3e4f5a6
-    transaction-id: 4a7b9c2d-3e5f-4a1b-8c6d-7e8f9a0b1c2d
-    commitment-file: classpath:beckn/commitment-cce.json   # copy of cce-beckn-service src/main/resources/commitment.json
+    id: bpp.cce.nextsteps.mdtlabs.org
+    uri: https://cce.example.org/sygnal/receiver
   openhim-channel:
     url: http://localhost:5000/cce-beckn
     username: cce-beckn-endpoint
     password: dev-password
-    timeout: 35000
+    timeout: 25000
   subscribers:
-    - subscriber-id: bap.openmrs.example.org
-      subscriber-uri: https://openmrs.example.org/bap/receiver
-      commitment-file: classpath:beckn/commitment-hie-feed.json
+    - subscriber-id: bap.openmrs.nextsteps.mdtlabs.org
       source-system: openmrs-kicukiro
 
 cce:
@@ -668,34 +654,59 @@ cce:
         output: beckn
 ```
 
-### 13.4 Send a Test `update` (as `onix-bpp` would)
+The same with environment variables: `OPENHIM_EMITTER_BECKN_ONIX_CALLER_URL`, `OPENHIM_EMITTER_BECKN_ONIX_TIMEOUT_MS`, `OPENHIM_EMITTER_BECKN_SELF_ID`, `OPENHIM_EMITTER_BECKN_SELF_NETWORK_ID`, `OPENHIM_EMITTER_BECKN_CCE_ID`, `OPENHIM_EMITTER_BECKN_CCE_URI`, `OPENHIM_EMITTER_BECKN_OPENHIM_CHANNEL_URL`, `OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_ID`, `OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_PASSWORD`, `OPENHIM_EMITTER_BECKN_OPENHIM_CHANNEL_TIMEOUT_MS`. The subscribers and the per-source `output` are YAML only.
+
+### 13.4 Send a Test `sygnal/event/report` (as `onix-openhim` would)
 
 ```bash
-curl -X POST http://localhost:8082/beckn/bpp-webhook/update \
+cat > /tmp/event-report.json <<'JSON'
+{
+  "context": {
+    "version": "2.0.0", "action": "sygnal/event/report",
+    "networkId": "sygnal.nextsteps.mdtlabs.org/sygnal_demo_network_registry",
+    "senderId": "bap.openmrs.nextsteps.mdtlabs.org",
+    "receiverId": "bap.openhim.nextsteps.mdtlabs.org",
+    "receiverUri": "https://hie.example.org/sygnal/receiver",
+    "transactionId": "4a7b9c2d-3e5f-4a1b-8c6d-7e8f9a0b1c2d",
+    "messageId": "c7e1d2f3-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+    "timestamp": "2026-11-13T08:00:30Z"
+  },
+  "message": { "events": [ {
+    "@type": "sygnal:CoordinationEvent",
+    "id": "b2d6e8f0-1a3c-4e7f-9b1d-3f5a7c9e1b3d",
+    "revision": 1, "eventType": "DELIVERY_RECORDED", "granularity": "INDIVIDUAL",
+    "from": { "id": "bap.openmrs.nextsteps.mdtlabs.org", "role": "PROVIDER" },
+    "occurredAt": "2026-11-13T08:00:00Z",
+    "eventAttributes": {
+      "@context": "https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema/CceClinicalEvent/v1.0/context.jsonld",
+      "@type": "cce:CceClinicalEvent",
+      "eventType": "Encounter", "patientId": "UPID-12345", "fhirVersion": "4.0.1",
+      "sourceEventId": "enc-0001",
+      "resource": { "resourceType": "Encounter", "id": "enc-0001", "status": "finished",
+                    "subject": { "reference": "Patient/UPID-12345" } }
+    } } ] }
+}
+JSON
+
+curl -X POST http://localhost:8082/sygnal/event/report \
   -H "Content-Type: application/json" \
-  -d @src/test/resources/beckn/update-from-openmrs.json
-# Expected: 200 Ack. WireMock shows POST /bap/caller/update (to CCE) and POST /bpp/caller/on_update (ACCEPTED)
+  -d @/tmp/event-report.json
+# Expected: 202 {"message":{"status":"ACK","messageId":"c7e1d2f3-…"}}.
+# WireMock shows one POST /sygnal/caller/sygnal/event/report (to CCE) whose events[0].id is b2d6e8f0-… (the same id).
 ```
 
-The body is the sample in [Beckn Integration §3.6](beckn-integration.md#36-example-inbound-update).
+More samples: [Beckn Integration §3](beckn-integration.md).
 
 | Check | Expected |
 |-------|----------|
 | Every answer | The body is `{ "message": { "status": "ACK" or "NACK", "messageId": <the request's>, … } }` |
-| Unknown `bapId` or missing contract id | 400 `Nack` `BAD_REQUEST`; no call to the channel |
-| Two `performance` entries | 400 `Nack` `BAD_REQUEST`; no call to the channel |
-| `X-Source-System` names no source | Channel answers 200 `ignored` → 400 `Nack` `EVENT_REJECTED`; `cce_emitter_beckn_channel_ignored_total` goes up |
-| WireMock `/bap/caller/update` returns 400 `EVENT_REJECTED` | `/inbound` answers 400 `COLLECTOR_CLIENT_ERROR` → 400 `Nack` `EVENT_REJECTED` with CCE's text; no `on_update` |
-| WireMock `/bap/caller/update` returns 400 `BAD_REQUEST` | 500 `Nack` `HIE_ERROR` with CCE's text; no `on_update` |
-| WireMock `/bap/caller/update` returns 500 | `/inbound` answers 502 → 500 `Nack` `UNAVAILABLE`; one call to WireMock (no retry); no `on_update` |
-| `action` = `confirm` | 400 `Nack` `NOT_SUPPORTED` |
-
-### 13.5 Send a Test `on_update` (as `onix-bap` would)
-
-```bash
-curl -X POST http://localhost:8082/beckn/bap-webhook/on_update \
-  -H "Content-Type: application/json" \
-  -d '{"context":{"version":"2.0.0","action":"on_update","bapId":"bap.openhim.example.org","bppId":"bpp.mdtlabs.org","transactionId":"4a7b9c2d-3e5f-4a1b-8c6d-7e8f9a0b1c2d","messageId":"c7e1d2f3-4a5b-4c6d-8e7f-9a0b1c2d3e4f","timestamp":"2026-11-13T08:00:37Z"},"message":{"contract":{"id":"9d4e2f6a-1b3c-4d5e-8f70-b1c2d3e4f5a6","performance":[{"id":"b2d6e8f0-1a3c-5e7f-9b1d-3f5a7c9e1b3d","status":{"code":"DUPLICATE"}}]}}}'
-# Expected: 200 Ack with the same messageId; log line with DUPLICATE; cce_emitter_events_duplicate_total goes up.
-# Also works when no update with this messageId was sent first: CCE's on_update may arrive before the Ack.
-```
+| `context.action` is not `sygnal/event/report` | 400 `Nack` `CTX_ACTION_MISMATCH`; no call to the channel |
+| Unknown `senderId`, or `receiverId` not `beckn.self.id` | 400 `Nack` `CTX_INVALID_FIELD`; no call to the channel |
+| No `messageId` | 400 `Nack` `CTX_MISSING_FIELD`; no call to the channel |
+| Two events, or `id` not a UUID | 400 `Nack` `SCH_SCHEMA_VALIDATION_FAILED`; no call to the channel |
+| `eventAttributes.@type` not `cce:CceClinicalEvent` | 400 `Nack` `SCH_TYPE_NOT_SUPPORTED`; no call to the channel |
+| `X-Source-System` names no source | Channel answers 200 `ignored` → 400 `Nack` `BIZ_GENERIC_ERROR` (`ignored: …`); `cce_emitter_beckn_channel_ignored_total` goes up |
+| WireMock returns 400 `BIZ_GENERIC_ERROR` | `/inbound` answers 400 `COLLECTOR_CLIENT_ERROR` → 400 `Nack` `BIZ_GENERIC_ERROR`, text `CCE: <CCE's text>` |
+| WireMock returns 400 `CTX_INVALID_FIELD` | 500 `Nack` `NET_INTERNAL_ERROR` with CCE's text (the HIE's settings are wrong) |
+| WireMock returns 500 | `/inbound` answers 502 → 500 `Nack` `NET_DOWNSTREAM_UNAVAILABLE`; one call to WireMock (no retry) |
+| Same request sent twice | Both answered 202 `Ack`; both outbound calls carry the same event id, so CCE de-duplicates |

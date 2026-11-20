@@ -13,7 +13,9 @@ import java.util.UUID;
  *
  * <p>ID generation strategy:
  * <ul>
- *   <li>If {@code sourceEventId} is present in the metadata, a <strong>deterministic</strong>
+ *   <li>If the metadata carries an {@code eventId} (the HMIS's Sygnal event id, a UUID), it is
+ *       kept as it is: CCE de-duplicates on the same id on every hop.</li>
+ *   <li>Else, if {@code sourceEventId} is present in the metadata, a <strong>deterministic</strong>
  *       UUID v5 (name-based, SHA-1) is generated from {@code sourceIdentifier + sourceEventId}.
  *       This ensures idempotent event IDs for the same source event, supporting deduplication.</li>
  *   <li>If {@code sourceEventId} is absent, a random {@link UUID#randomUUID()} is generated.</li>
@@ -36,9 +38,13 @@ public class EventIdGenerator {
      * Generates a CloudEvent ID from the given source metadata.
      *
      * @param meta the source metadata containing identifiers
-     * @return a UUID string — deterministic if sourceEventId is present, random otherwise
+     * @return a UUID string — the given event id, else deterministic if sourceEventId is present, random otherwise
      */
     public String generate(SourceMetadata meta) {
+        if (meta != null && meta.eventId() != null && !meta.eventId().isBlank()) {
+            log.debug("Kept the given event ID '{}'", meta.eventId());
+            return meta.eventId();
+        }
         if (meta != null
                 && meta.sourceEventId() != null
                 && !meta.sourceEventId().isBlank()) {

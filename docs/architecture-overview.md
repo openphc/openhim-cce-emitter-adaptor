@@ -58,7 +58,7 @@ The Emitter Adaptor is a generic **OpenHIM mediator** built as a standalone **Sp
 └─────────────────────────────────────────────────────────────┘
 ```
 
-> **Beckn (built, on by default on this branch).** On branch `demo-beckn` the adaptor can also take events from HMIS systems over a Beckn network and send them on to CCE over Beckn. The existing OpenHIM path and the collector output above are unchanged by default. See §15 and [Beckn Integration](beckn-integration.md).
+> **Sygnal (built, on by default on this branch).** On branch `sygnal-actions` the adaptor can also take events from HMIS systems as a Sygnal `sygnal/event/report` and send them on to CCE as a `sygnal/event/report`. With `OPENHIM_EMITTER_BECKN_ENABLED=false` the existing OpenHIM path and the collector output above work as before. See §15 and [Beckn Integration](beckn-integration.md).
 
 ## 3. Architecture Principles
 
@@ -411,40 +411,41 @@ These settings are in the base `application.yml` and carry through to all profil
 | **Retry** | Max 3 retries with exponential backoff for Collector calls |
 | **Max payload** | 1 MB (matching Collector limit) |
 
-## 15. Beckn Integration (Proposal)
+## 15. Sygnal Integration (Proposal)
 
-> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md).
+> **Status:** Built on branch `sygnal-actions`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). The settings keep the `beckn.*` prefix.
 
-With `beckn.enabled=false` (the default) and no source set to `output: beckn`, nothing in §1–§14 changes.
+With `beckn.enabled=false` and no source set to `output: beckn`, nothing in §1–§14 changes.
 
 ### 15.1 Context
 
 ```
-HMIS (OpenMRS, Spice) ── its onix(bap) ══► openhim-onix(bpp)
-                                               │ POST /beckn/bpp-webhook/update
+HMIS (OpenMRS) ── onix-openmrs caller ══► onix-openhim receiver
+                                               │ POST /sygnal/event/report
                                                ▼
                                ┌──── CCE Emitter Adaptor ────┐
-                               │ unwrap: FHIR + headers       │──► OpenHIM channel (new, /inbound primary)
+                               │ check + unwrap: FHIR+headers │──► OpenHIM channel (new, /inbound primary)
                                │                              │◄── POST /inbound (existing pipeline)
                                │ output per source:           │
                                │   collector → CCE Collector  │   (today)
-                               │   beckn     → wrap           │──► openhim-onix(bap) ══► cce-onix(bpp) → cce-beckn-service (/api/bpp-webhook) → CCE Collector
-                               │ POST /beckn/bap-webhook/...  │◄── openhim-onix(bap) (CCE's on_update)
+                               │   beckn     → wrap           │──► onix-openhim caller ══► onix-cce receiver → cce-beckn-service (/sygnal/event/report) → CCE Collector
                                └──────────────────────────────┘
 ```
 
-`openhim-onix` is the HIE's Beckn adapter, owned by the HIE team. `onix-bpp` faces the HMIS systems; `onix-bap` faces CCE.
+Both hops use one Sygnal action, `sygnal/event/report`. There are no callbacks (no `on_update`): the HMIS gets its answer in the same HTTP call, once CCE has answered. `onix-openhim` is the HIE's onix container, owned by the HIE team. It has one subscriber id (`beckn.self.id`) and two modules: `/sygnal/receiver/` takes messages from the HMIS systems, `/sygnal/caller/` sends them to CCE.
 
-### 15.2 Where the Beckn parts sit
+### 15.2 Where the Sygnal parts sit
 
 | Part | Package | Role |
 |------|---------|------|
-| `BecknBppWebhookController`, `BecknBapWebhookController` | `controller` | The two new endpoints |
-| `BecknInboundUnwrapper` | `adaptor` | Subscriber and contract check, takes the FHIR resource out of the `CceClinicalEvent` box |
-| `BecknInboundService`, `OpenHimChannelClient`, `BecknCallbackService` | `service` | Posts the resource to the OpenHIM channel, maps the answer to `Ack` or `Nack` (CCE's body shape; codes `BAD_REQUEST`, `NOT_SUPPORTED`, `EVENT_REJECTED`, `UNAVAILABLE`), sends `on_update` |
-| `EventForwardingRouter`, `BecknForwardingService` | `service` | Chooses the output per source; wraps the CloudEvent and sends `update` to `onix-bap`; reads CCE's `ACK` / `NACK` |
+| `SygnalEventReportController` | `controller` | The new endpoint, `POST /sygnal/event/report` |
+| `BecknInboundUnwrapper` | `adaptor` | Context and event checks (subscriber, receiver, one event, event id, `CceClinicalEvent` type), takes the FHIR resource out of the `CceClinicalEvent` box and builds the channel headers |
+| `BecknInboundService`, `OpenHimChannelClient`, `ChannelAnswerMapper` | `service` | Posts the resource to the OpenHIM channel, maps the answer to `Ack` (202) or `Nack` (CCE's body shape, canonical Beckn codes) |
+| `EventForwardingRouter`, `BecknForwardingService`, `BecknMessageFactory`, `BecknOnixClient`, `CceAnswerMapper` | `service` | Chooses the output per source; wraps the CloudEvent and sends `sygnal/event/report` to `onix-openhim`'s caller; reads CCE's `ACK` / `NACK` |
 | `CceClinicalEventMapper` | `cloudevents` | CloudEvent → `CceClinicalEvent` box |
-| `BecknProperties`, `SourceProperties.output` | `config` | `beckn.*` and `cce.emitter.sources.<key>.output` |
+| `SourceAdaptorService`, `EventIdGenerator` | `adaptor`, `cloudevents` | Keep the HMIS's event id (`X-Sygnal-Event-Id`) and time (`X-Sygnal-Occurred-At`) as the CloudEvent `id` and `time` |
+| `ErrorCodes`, `BecknExceptionHandler` | `model.beckn`, `exception` | The canonical Beckn error codes of the Nacks |
+| `BecknProperties`, `BecknStartupValidator`, `SourceProperties.output` | `config` | `beckn.*` and `cce.emitter.sources.<key>.output`; checks the settings at start |
 
 The pipeline in §7 is unchanged except step 5: `InboundEventService` asks `EventForwardingRouter` for the output instead of calling `CollectorForwardingService` directly.
 
@@ -452,8 +453,6 @@ The pipeline in §7 is unchanged except step 5: `InboundEventService` asks `Even
 
 | Direction | Protocol | Endpoint | Content |
 |-----------|----------|----------|---------|
-| **IN** | HTTP POST | `/beckn/bpp-webhook/{action}` | Beckn `update` from an HMIS, via `onix-bpp` |
-| **IN** | HTTP POST | `/beckn/bap-webhook/{action}` | Beckn `on_update` from CCE, via `onix-bap` |
-| **OUT** | HTTP POST | `{beckn.openhim-channel.url}` | Raw FHIR resource, with `X-Source-System`, `X-Source-Event-Id`, `X-Correlation-Id` |
-| **OUT** | HTTP POST | `{onix-bap}/bap/caller/update` | Beckn `update` to CCE, with CCE's fixed `cce-care-coordination` commitment. `cce-onix` passes it to `cce-beckn-service` at `POST /api/bpp-webhook/update` (port 8075) |
-| **OUT** | HTTP POST | `{onix-bpp}/bpp/caller/on_update` | Beckn `on_update` to the HMIS |
+| **IN** | HTTP POST | `/sygnal/event/report` | Sygnal `sygnal/event/report` from an HMIS, via `onix-openhim`'s receiver. Answers 202 `Ack` or a `Nack` |
+| **OUT** | HTTP POST | `{beckn.openhim-channel.url}` | Raw FHIR resource, with `X-Source-System`, `X-Source-Event-Id`, `X-Sygnal-Event-Id`, `X-Sygnal-Occurred-At`, `X-Correlation-Id` |
+| **OUT** | HTTP POST | `{beckn.onix.caller-url}/sygnal/event/report` (`http://onix-openhim:8082/sygnal/caller/sygnal/event/report`) | Sygnal `sygnal/event/report` to CCE. `onix-openhim` sends it to `onix-cce`'s receiver, which passes it to `cce-beckn-service` at `POST /sygnal/event/report` (port 8075) |

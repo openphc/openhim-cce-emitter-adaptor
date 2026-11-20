@@ -1,7 +1,7 @@
 package org.openphc.cce.emitter.model.beckn;
 
 /**
- * The answer to an outbound HTTP call of the Beckn role: status and body, or no answer at all
+ * The answer to an outbound HTTP call of the Sygnal role: status and body, or no answer at all
  * ({@code unreachable}: timeout, connection refused) with a short reason.
  */
 public record HttpAnswer(int status, String contentType, String body, boolean unreachable, String detail) {

@@ -32,7 +32,7 @@ import java.util.Map;
 /**
  * Orchestrates the full inbound event processing pipeline:
  * source resolution, FHIR→CloudEvent transformation, forwarding to the source's
- * output (CCE Collector or CCE over Beckn, via {@link EventForwardingRouter}),
+ * output (CCE Collector or CCE over Sygnal, via {@link EventForwardingRouter}),
  * and OpenHIM response envelope construction.
  *
  * <p>Keeps the controller layer thin — the controller handles only HTTP
@@ -175,7 +175,7 @@ public class InboundEventService {
                         .headers(Map.of("Content-Type", "application/json"))
                         .build())
                 .response(OpenHimResponse.Orchestration.OrchestrationResponse.builder()
-                        .status(output == Output.BECKN || collectorStatus.equals("duplicate") ? 200 : 202)
+                        .status(collectorStatus.equals("duplicate") ? 200 : 202)
                         .body(toJson(collectorResponse))
                         .timestamp(responseTimestamp)
                         .build())

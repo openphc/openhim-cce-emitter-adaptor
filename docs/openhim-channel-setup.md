@@ -231,13 +231,13 @@ No cleanup is required on the adaptor side — it is stateless. The Collector ha
 
 ## 9. Beckn Channel (Proposal)
 
-> **Status:** Built on branch `demo-beckn`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). §1–§8 are unchanged: the adaptor stays a secondary route on the eBUZIMA channel, and sources that post FHIR through OpenHIM keep going to the CCE Collector. This section is needed only with `beckn.enabled=true`.
+> **Status:** Built on branch `sygnal-actions`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). §1–§8 are unchanged: the adaptor stays a secondary route on the eBUZIMA channel, and sources that post FHIR through OpenHIM keep going to the CCE Collector. This section is needed only with `beckn.enabled=true`.
 
-The adaptor's Beckn endpoint (`/beckn/bpp-webhook/update`) takes the FHIR resource out of a Beckn message from an HMIS and posts it into OpenHIM, so OpenHIM still authenticates and logs every event. OpenHIM routes it back to the adaptor's existing `/inbound`.
+The adaptor's Sygnal endpoint (`POST /sygnal/event/report`) takes the FHIR resource out of a Sygnal `sygnal/event/report` from an HMIS (forwarded by `onix-openhim`) and posts it into OpenHIM, so OpenHIM still authenticates and logs every event. OpenHIM routes it back to the adaptor's existing `/inbound`. The channel and client keep their `beckn` names, as the settings do.
 
 ### 9.1 Why a separate channel
 
-The Beckn endpoint reads the answer of `/inbound` to decide between `Ack` and `Nack` (400 `EVENT_REJECTED` or `BAD_REQUEST`, or 500 `UNAVAILABLE`). A **secondary** route's answer never reaches the client: the client gets the primary route's answer. So the Beckn traffic needs a channel where `/inbound` is the **primary** route. The eBUZIMA channel is not changed.
+The Sygnal endpoint reads the answer of `/inbound` to decide between `Ack` (202) and `Nack` (400 `BIZ_GENERIC_ERROR`, or 500 `NET_DOWNSTREAM_UNAVAILABLE` or `NET_INTERNAL_ERROR`). There is no callback, so this answer, which carries CCE's answer, is the whole result for the HMIS. A **secondary** route's answer never reaches the client: the client gets the primary route's answer. So the Sygnal traffic needs a channel where `/inbound` is the **primary** route. The eBUZIMA channel is not changed.
 
 ### 9.2 Client
 
@@ -248,7 +248,7 @@ The Beckn endpoint reads the answer of `/inbound` to decide between `Ack` and `N
 | **Roles** | `cce-beckn` | Only this channel allows it |
 | **Authentication** | Basic auth | Password in `OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_PASSWORD` |
 
-**Do not** set this client id as the `client-id` of any source under `cce.emitter.sources`. `X-OpenHIM-ClientID` is matched before `X-Source-System`; if the Beckn client matched a source, every Beckn event would be credited to that source. The adaptor refuses to start in that case (`BecknStartupValidator`).
+**Do not** set this client id as the `client-id` of any source under `cce.emitter.sources`. `X-OpenHIM-ClientID` is matched before `X-Source-System`; if the Sygnal endpoint's client matched a source, every Sygnal event would be credited to that source. The adaptor refuses to start in that case (`BecknStartupValidator`).
 
 ### 9.3 Channel and Route
 
@@ -258,10 +258,10 @@ The Beckn endpoint reads the answer of `/inbound` to decide between `Ack` and `N
 | **URL pattern** | `^/cce-beckn$` | `beckn.openhim-channel.url` ends with `/cce-beckn` |
 | **Methods** | `POST` | |
 | **Allowed** | `cce-beckn` | The role of the client above |
-| **Timeout** | Shorter than `beckn.openhim-channel.timeout` (35 s), longer than `beckn.onix.timeout` (25 s) | See [Beckn Integration §8.3](beckn-integration.md#83-every-answer-returns-in-the-same-call). At least 30000 ms: CCE's `Ack` alone can take 17 s |
+| **Timeout** | Between `beckn.onix.timeout` (20 s) and `beckn.openhim-channel.timeout` (25 s), e.g. 22000–23000 ms | See [Beckn Integration §8.3](beckn-integration.md#83-every-answer-returns-in-the-same-call). Longer than the onix call, which includes CCE's `Ack` (up to about 17 s); shorter than the Sygnal endpoint's wait, so the endpoint gets OpenHIM's answer and not its own timeout |
 | **Route name** | `CCE Emitter Adaptor (Beckn)` | |
 | **Route host / port / path** | `cce-emitter-adaptor` / `8082` / `/inbound` | The existing endpoint |
-| **Primary** | **Yes** | **Critical** — the answer must reach the Beckn endpoint |
+| **Primary** | **Yes** | **Critical** — the answer must reach the Sygnal endpoint |
 
 ```json
 {
@@ -270,7 +270,7 @@ The Beckn endpoint reads the answer of `/inbound` to decide between `Ack` and `N
   "methods": ["POST"],
   "allow": ["cce-beckn"],
   "authType": "private",
-  "timeout": 30000,
+  "timeout": 22000,
   "routes": [
     {
       "name": "CCE Emitter Adaptor (Beckn)",
@@ -288,27 +288,30 @@ The Beckn endpoint reads the answer of `/inbound` to decide between `Ack` and `N
 
 | Header | Set by | Used for |
 |--------|--------|----------|
-| `X-Source-System` | Beckn endpoint: the subscriber's `source-system` | Source resolution (the client id matches no source) |
-| `X-Source-Event-Id` | Beckn endpoint: `performance[0].id` | CloudEvent `sourceeventid`, and a fixed CloudEvent `id` |
-| `X-Correlation-Id` | Beckn endpoint: `context.messageId` | Not used for `correlationid` here: `X-OpenHIM-TransactionID` wins |
+| `X-Source-System` | Sygnal endpoint: the subscriber's `source-system` | Source resolution (the client id matches no source) |
+| `X-Source-Event-Id` | Sygnal endpoint: `eventAttributes.sourceEventId`, else `events[0].id` | CloudEvent `sourceeventid` |
+| `X-Sygnal-Event-Id` | Sygnal endpoint: `events[0].id` | CloudEvent `id` (when it is a full UUID), so CCE de-duplicates on the HMIS's own event id |
+| `X-Sygnal-Occurred-At` | Sygnal endpoint: `events[0].occurredAt`, else `context.timestamp` | CloudEvent `time` (when it parses as ISO-8601; else the time of receipt) |
+| `X-Correlation-Id` | Sygnal endpoint: `context.messageId` | Not used for `correlationid` here: `X-OpenHIM-TransactionID` wins |
 | `X-OpenHIM-ClientID`, `X-OpenHIM-TransactionID` | OpenHIM Core | As in §5 |
 
-Check in the first test that OpenHIM passes the three `X-` headers through to the route.
+Check in the first test that OpenHIM passes the five `X-` headers through to the route. Without `X-Sygnal-Event-Id` the CloudEvent `id` falls back to a UUID v5 of the source and `X-Source-Event-Id`, which CCE would not match with the HMIS's id.
 
 ### 9.5 Verify
 
 | Check | Expected |
 |-------|----------|
-| Transaction log | One transaction per Beckn event, client `cce-beckn-endpoint`, route `CCE Emitter Adaptor (Beckn)` with `202` |
-| Wrong `source-system` | Transaction `Completed` with `200` and `"status":"ignored"`; the HMIS gets `Nack` (400) `EVENT_REJECTED` |
-| CCE refuses the event | Transaction with `400` `COLLECTOR_CLIENT_ERROR`, message `CCE EVENT_REJECTED: …`; the HMIS gets `Nack` (400) `EVENT_REJECTED` with CCE's text |
-| CCE down | Transaction `Failed` with `502`; the HMIS gets `Nack` (500) `UNAVAILABLE` |
+| Transaction log | One transaction per Sygnal event, client `cce-beckn-endpoint`, route `CCE Emitter Adaptor (Beckn)` with `202`, orchestration `Forward to CCE over Sygnal` (path `/sygnal/caller/sygnal/event/report`) |
+| Wrong `source-system` | Transaction `Completed` with `200` and `"status":"ignored"`; the HMIS gets `Nack` (400) `BIZ_GENERIC_ERROR`, text `ignored: …` |
+| CCE refuses the event | Transaction with `400` `COLLECTOR_CLIENT_ERROR`, message `CCE BIZ_GENERIC_ERROR: …`; the HMIS gets `Nack` (400) `BIZ_GENERIC_ERROR`, text `CCE: <CCE's text>` |
+| CCE down | Transaction `Failed` with `502`; the HMIS gets `Nack` (500) `NET_DOWNSTREAM_UNAVAILABLE` |
 
 ### 9.6 Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Every Beckn `update` is answered `Nack` `EVENT_REJECTED`, text `ignored: …` | `source-system` not under `cce.emitter.sources`, or the Beckn client id matches a source's `client-id` | Fix the settings; restart |
-| HMIS gets `Nack` (500) `HIE_ERROR` after a 401 | Wrong `OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_PASSWORD`, or client not allowed on the channel | Check the client and the channel's `allow` list |
-| HMIS gets `Nack` (500) `UNAVAILABLE` although the transaction succeeded | A timeout on an outer hop is shorter than the inner one, often an onix `responseHeaderTimeout` left at 5 s | Fix the timeout budget. The HMIS's resend gets `Ack` and CCE answers `DUPLICATE`, so nothing is counted twice |
-| Beckn events go to the Collector, not to CCE over Beckn | The source has no `output: beckn` | Set `cce.emitter.sources.<key>.output: beckn` |
+| Every `sygnal/event/report` is answered `Nack` `BIZ_GENERIC_ERROR`, text `ignored: …` | `source-system` not under `cce.emitter.sources`, or the Sygnal endpoint's client id matches a source's `client-id` | Fix the settings; restart |
+| HMIS gets `Nack` (500) `NET_INTERNAL_ERROR` after a 401 | Wrong `OPENHIM_EMITTER_BECKN_OPENHIM_CLIENT_PASSWORD`, or client not allowed on the channel | Check the client and the channel's `allow` list |
+| HMIS gets `Nack` (500) `NET_INTERNAL_ERROR`, text `CCE CTX_…` | CCE refused the HIE's own context: `beckn.self.id`, `beckn.self.network-id`, `beckn.cce.id` or `beckn.cce.uri` is wrong | Fix the HIE settings; restart |
+| HMIS gets `Nack` (500) `NET_DOWNSTREAM_UNAVAILABLE` although the transaction succeeded | A timeout on an outer hop is shorter than the inner one: the channel timeout not between 20 s and 25 s, or an onix `responseHeaderTimeout` left at 5 s | Fix the timeout budget. The HMIS's resend carries the same event id, so CCE answers `Ack` for the duplicate and nothing is counted twice |
+| Sygnal events go to the Collector, not to CCE over Sygnal | The source has `output: collector` | Set `cce.emitter.sources.<key>.output: beckn`, or remove `output` |
