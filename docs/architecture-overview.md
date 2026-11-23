@@ -432,17 +432,17 @@ HMIS (OpenMRS) ── onix-openmrs caller ══► onix-openhim receiver
                                └──────────────────────────────┘
 ```
 
-Both hops use one Sygnal action, `sygnal/event/report`. There are no callbacks (no `on_update`): the HMIS gets its answer in the same HTTP call, once CCE has answered. `onix-openhim` is the HIE's onix container, owned by the HIE team. It has one subscriber id (`beckn.self.id`) and two modules: `/sygnal/receiver/` takes messages from the HMIS systems, `/sygnal/caller/` sends them to CCE.
+Both hops use one Sygnal action, `sygnal/event/report`. On both hops its payload is one flat `cce:CceClinicalEvent` (CCE's own type, schema v2.0) that holds the FHIR resource; since 2026-11-23 it is no longer a `sygnal:CoordinationEvent` with an `eventAttributes` bag ([Beckn Integration](beckn-integration.md), "Change 2026-11-23"). There are no callbacks (no `on_update`): the HMIS gets its answer in the same HTTP call, once CCE has answered. `onix-openhim` is the HIE's onix container, owned by the HIE team. It has one subscriber id (`beckn.self.id`) and two modules: `/sygnal/receiver/` takes messages from the HMIS systems, `/sygnal/caller/` sends them to CCE.
 
 ### 15.2 Where the Sygnal parts sit
 
 | Part | Package | Role |
 |------|---------|------|
 | `SygnalEventReportController` | `controller` | The new endpoint, `POST /sygnal/event/report` |
-| `BecknInboundUnwrapper` | `adaptor` | Context and event checks (subscriber, receiver, one event, event id, `CceClinicalEvent` type), takes the FHIR resource out of the `CceClinicalEvent` box and builds the channel headers |
+| `BecknInboundUnwrapper` | `adaptor` | Context and event checks (subscriber, receiver, one event, `cce:CceClinicalEvent` type, event id, `occurredAt`), takes the FHIR resource out of the event and builds the channel headers |
 | `BecknInboundService`, `OpenHimChannelClient`, `ChannelAnswerMapper` | `service` | Posts the resource to the OpenHIM channel, maps the answer to `Ack` (202) or `Nack` (CCE's body shape, canonical Beckn codes) |
-| `EventForwardingRouter`, `BecknForwardingService`, `BecknMessageFactory`, `BecknOnixClient`, `CceAnswerMapper` | `service` | Chooses the output per source; wraps the CloudEvent and sends `sygnal/event/report` to `onix-openhim`'s caller; reads CCE's `ACK` / `NACK` |
-| `CceClinicalEventMapper` | `cloudevents` | CloudEvent → `CceClinicalEvent` box |
+| `EventForwardingRouter`, `BecknForwardingService`, `BecknMessageFactory`, `BecknOnixClient`, `CceAnswerMapper` | `service` | Chooses the output per source; sends the CloudEvent, as a `cce:CceClinicalEvent`, in a `sygnal/event/report` to `onix-openhim`'s caller; reads CCE's `ACK` / `NACK` |
+| `CceClinicalEventMapper` | `cloudevents` | CloudEvent → `cce:CceClinicalEvent` (schema v2.0), the one event of the report |
 | `SourceAdaptorService`, `EventIdGenerator` | `adaptor`, `cloudevents` | Keep the HMIS's event id (`X-Sygnal-Event-Id`) and time (`X-Sygnal-Occurred-At`) as the CloudEvent `id` and `time` |
 | `ErrorCodes`, `BecknExceptionHandler` | `model.beckn`, `exception` | The canonical Beckn error codes of the Nacks |
 | `BecknProperties`, `BecknStartupValidator`, `SourceProperties.output` | `config` | `beckn.*` and `cce.emitter.sources.<key>.output`; checks the settings at start |

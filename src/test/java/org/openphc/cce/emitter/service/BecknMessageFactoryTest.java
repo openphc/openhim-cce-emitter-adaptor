@@ -21,13 +21,18 @@ class BecknMessageFactoryTest {
     private final BecknProperties props = properties(true, "cce-beckn-endpoint", List.of(openmrsSubscriber()));
     private final BecknMessageFactory factory = new BecknMessageFactory(mapper, props);
 
-    @Test
-    @DisplayName("report to CCE: closed Sygnal context, exactly one CoordinationEvent with the given id")
-    void reportToCce() throws Exception {
-        CceClinicalEvent box = new CceClinicalEvent("ctx", CceClinicalEvent.TYPE, "Encounter", "p1", "0002", null,
-                "4.0.1", "src-1", mapper.readTree("{\"resourceType\":\"Encounter\"}"));
-        JsonNode r = factory.eventReport("txn-1", "msg-1", EVENT_ID, OCCURRED_AT, box);
+    private CceClinicalEvent event(String facilityId, String facilityName, String sourceEventId) throws Exception {
+        return new CceClinicalEvent(EVENT_CONTEXT, CceClinicalEvent.TYPE, EVENT_ID, OCCURRED_AT, "1198503150001234",
+                "4.0.1", facilityId, facilityName, sourceEventId,
+                mapper.readTree("{\"resourceType\":\"Encounter\",\"id\":\"e1\"}"));
+    }
 
+    @Test
+    @DisplayName("report to CCE: closed Sygnal context, and message.events = [ the cce:CceClinicalEvent, as it is ]")
+    void reportToCce() throws Exception {
+        JsonNode r = factory.eventReport("txn-1", "msg-1", event("0002", "Kicukiro HC", "src-1"));
+
+        assertThat(r.fieldNames()).toIterable().containsExactly("context", "message");
         JsonNode c = r.path("context");
         assertThat(c.path("version").asText()).isEqualTo("2.0.0");
         assertThat(c.path("action").asText()).isEqualTo("sygnal/event/report");
@@ -41,29 +46,38 @@ class BecknMessageFactoryTest {
         // Closed object: nothing else, in particular no Beckn bap/bpp fields
         assertThat(c.size()).isEqualTo(9);
 
-        JsonNode events = r.path("message").path("events");
-        assertThat(r.path("message").size()).isEqualTo(1);
-        assertThat(events).hasSize(1);
-        JsonNode e = events.get(0);
-        assertThat(e.has("@context")).isFalse();
-        assertThat(e.path("@type").asText()).isEqualTo("sygnal:CoordinationEvent");
-        assertThat(e.path("id").asText()).isEqualTo(EVENT_ID);
-        assertThat(e.path("revision").asInt()).isEqualTo(1);
-        assertThat(e.path("eventType").asText()).isEqualTo("DELIVERY_RECORDED");
-        assertThat(e.path("granularity").asText()).isEqualTo("INDIVIDUAL");
-        assertThat(e.path("from").path("id").asText()).isEqualTo(SELF_ID);
-        assertThat(e.path("from").path("role").asText()).isEqualTo("PROVIDER");
-        assertThat(e.path("occurredAt").asText()).isEqualTo(OCCURRED_AT);
-        assertThat(e.path("eventAttributes").path("@type").asText()).isEqualTo("cce:CceClinicalEvent");
-        assertThat(e.path("eventAttributes").path("@context").asText()).isEqualTo("ctx");
-        assertThat(e.path("eventAttributes").path("sourceEventId").asText()).isEqualTo("src-1");
+        // The exact message: one event, the flat cce:CceClinicalEvent v2.0, and nothing else
+        assertThat(r.path("message")).isEqualTo(mapper.readTree("""
+                {
+                  "events": [ {
+                    "@context": "https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema/CceClinicalEvent/v2.0/context.jsonld",
+                    "@type": "cce:CceClinicalEvent",
+                    "id": "3f6c1c1e-8a53-4b0e-9d7a-2b6f4e1a9c10",
+                    "occurredAt": "2026-11-13T07:55:00Z",
+                    "patientId": "1198503150001234",
+                    "fhirVersion": "4.0.1",
+                    "facilityId": "0002",
+                    "facilityName": "Kicukiro HC",
+                    "sourceEventId": "src-1",
+                    "resource": { "resourceType": "Encounter", "id": "e1" }
+                  } ]
+                }
+                """));
+        JsonNode e = r.at("/message/events/0");
+        assertThat(e.fieldNames()).toIterable().containsExactly("@context", "@type", "id", "occurredAt", "patientId",
+                "fhirVersion", "facilityId", "facilityName", "sourceEventId", "resource");
+        // Nothing of the sygnal:CoordinationEvent of profile v1.0
+        assertThat(r.toString()).doesNotContain("sygnal:CoordinationEvent", "eventAttributes", "eventType",
+                "revision", "granularity", "\"from\"", "DELIVERY_RECORDED");
     }
 
     @Test
-    @DisplayName("no occurredAt → the field is left out")
-    void noOccurredAt() {
-        JsonNode e = factory.eventReport("t", "m", EVENT_ID, null, null).at("/message/events/0");
-        assertThat(e.has("occurredAt")).isFalse();
+    @DisplayName("optional fields without a value are left out: no null, no empty string")
+    void optionalFieldsLeftOut() throws Exception {
+        JsonNode e = factory.eventReport("t", "m", event(null, null, null)).at("/message/events/0");
+        assertThat(e.fieldNames()).toIterable().containsExactly("@context", "@type", "id", "occurredAt", "patientId",
+                "fhirVersion", "resource");
+        assertThat(e.toString()).doesNotContain("null");
     }
 
     @Test

@@ -95,8 +95,8 @@ class ChannelAnswerMapperTest {
     @ValueSource(strings = {"SCH_SCHEMA_VALIDATION_FAILED", "SCH_TYPE_NOT_SUPPORTED"})
     @DisplayName("CCE's other 4xx Nack → Nack 400 BIZ_GENERIC_ERROR naming CCE's code")
     void cceOtherRefusal(String code) {
-        assertNack(map(400, error("COLLECTOR_CLIENT_ERROR", "CCE " + code + ": eventAttributes.patientId is missing")),
-                HttpStatus.BAD_REQUEST, "BIZ_GENERIC_ERROR", "CCE " + code + ": eventAttributes.patientId is missing");
+        assertNack(map(400, error("COLLECTOR_CLIENT_ERROR", "CCE " + code + ": events[0].patientId is missing")),
+                HttpStatus.BAD_REQUEST, "BIZ_GENERIC_ERROR", "CCE " + code + ": events[0].patientId is missing");
     }
 
     @ParameterizedTest

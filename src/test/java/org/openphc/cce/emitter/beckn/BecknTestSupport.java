@@ -18,6 +18,8 @@ public final class BecknTestSupport {
     public static final String EVENT_ID = "3f6c1c1e-8a53-4b0e-9d7a-2b6f4e1a9c10";
     public static final String OCCURRED_AT = "2026-11-13T07:55:00Z";
     public static final String SOURCE_EVENT_ID = "Encounter/7d2c9b1e";
+    public static final String SCHEMA_BASE_URL = "https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema";
+    public static final String EVENT_CONTEXT = SCHEMA_BASE_URL + "/CceClinicalEvent/v2.0/context.jsonld";
 
     private BecknTestSupport() {
     }
@@ -33,7 +35,7 @@ public final class BecknTestSupport {
     public static BecknProperties properties(boolean enabled, String channelUser, String selfId,
                                              List<BecknProperties.Subscriber> subs) {
         return new BecknProperties(enabled,
-                "https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema",
+                SCHEMA_BASE_URL,
                 new BecknProperties.Onix("http://onix-openhim:8082/sygnal/caller", 20000),
                 new BecknProperties.Self(selfId, NETWORK_ID),
                 new BecknProperties.Cce(CCE_ID, CCE_URI, new BecknProperties.Retry(1)),
@@ -61,7 +63,24 @@ public final class BecknTestSupport {
         return report(OPENMRS_ID, SELF_ID, event(EVENT_ID, resourceJson));
     }
 
+    /** One {@code cce:CceClinicalEvent} (schema v2.0), as an HMIS sends it. */
     public static String event(String id, String resourceJson) {
+        return """
+                {
+                  "@context": "%s",
+                  "@type": "cce:CceClinicalEvent",
+                  "id": "%s",
+                  "occurredAt": "%s",
+                  "patientId": "1198503150001234",
+                  "fhirVersion": "4.0.1",
+                  "sourceEventId": "%s",
+                  "resource": %s
+                }
+                """.formatted(EVENT_CONTEXT, id, OCCURRED_AT, SOURCE_EVENT_ID, resourceJson);
+    }
+
+    /** The event of profile v1.0: a {@code sygnal:CoordinationEvent} with the CCE data in a bag. No longer accepted. */
+    public static String oldEvent(String id, String resourceJson) {
         return """
                 {
                   "@type": "sygnal:CoordinationEvent",

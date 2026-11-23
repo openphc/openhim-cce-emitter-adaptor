@@ -52,7 +52,6 @@ class BecknInboundUnwrapperTest {
         assertThat(event.occurredAt()).isEqualTo(OCCURRED_AT);
         assertThat(event.messageId()).isEqualTo(MESSAGE_ID);
         assertThat(event.transactionId()).isEqualTo(OPENMRS_TXN);
-        assertThat(event.eventType()).isEqualTo("Encounter");
         assertThat(event.resource()).isEqualTo(json(ENCOUNTER));
         assertThat(event.headers()).containsExactly(
                 entry("X-Source-System", OPENMRS_SOURCE),
@@ -64,14 +63,23 @@ class BecknInboundUnwrapperTest {
     }
 
     @Test
-    @DisplayName("without sourceEventId the event id is the source event id; without occurredAt, context.timestamp")
-    void fallbacks() throws Exception {
-        String e = event(EVENT_ID, ENCOUNTER)
-                .replace("\"sourceEventId\": \"" + SOURCE_EVENT_ID + "\",", "")
-                .replace("\"occurredAt\": \"" + OCCURRED_AT + "\",", "");
-        BecknInboundUnwrapper.UnwrappedEvent event = unwrapper.unwrap(json(reportWith(e)));
-        assertThat(event.headers()).containsEntry("X-Source-Event-Id", EVENT_ID);
-        assertThat(event.occurredAt()).isEqualTo("2026-11-13T08:00:35Z");
+    @DisplayName("without sourceEventId the event id is the source event id")
+    void noSourceEventId() throws Exception {
+        String e = event(EVENT_ID, ENCOUNTER).replace("\"sourceEventId\": \"" + SOURCE_EVENT_ID + "\",", "");
+        assertThat(unwrapper.unwrap(json(reportWith(e))).headers()).containsEntry("X-Source-Event-Id", EVENT_ID);
+    }
+
+    @Test
+    @DisplayName("the sygnal:CoordinationEvent of profile v1.0 is refused as a wrong type")
+    void oldCoordinationEvent() {
+        assertBadRequest(reportWith(oldEvent(EVENT_ID, ENCOUNTER)), "SCH_TYPE_NOT_SUPPORTED",
+                "events[0].@type must be cce:CceClinicalEvent");
+    }
+
+    @Test
+    void noEventType() {
+        assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER).replace("\"@type\": \"cce:CceClinicalEvent\",", "")),
+                "SCH_TYPE_NOT_SUPPORTED", "@type");
     }
 
     @Test
@@ -113,16 +121,9 @@ class BecknInboundUnwrapperTest {
     }
 
     @Test
-    void revisionOtherThanOne() {
-        assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER).replace("\"revision\": 1", "\"revision\": 2")),
-                "SCH_SCHEMA_VALIDATION_FAILED", "revision");
-    }
-
-    @Test
-    void fromIsNotTheSender() {
-        assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER).replace(
-                        "\"from\": { \"id\": \"" + OPENMRS_ID + "\"", "\"from\": { \"id\": \"someone.else\"")),
-                "SCH_SCHEMA_VALIDATION_FAILED", "from.id");
+    void missingOccurredAt() {
+        assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER).replace("\"occurredAt\": \"" + OCCURRED_AT + "\",", "")),
+                "SCH_REQUIRED_FIELD_MISSING", "events[0].occurredAt");
     }
 
     @Test
@@ -132,7 +133,7 @@ class BecknInboundUnwrapperTest {
     }
 
     @Test
-    void wrongBoxType() {
+    void wrongEventType() {
         assertBadRequest(reportWith(event(EVENT_ID, ENCOUNTER).replace("cce:CceClinicalEvent", "cce:Other")),
                 "SCH_TYPE_NOT_SUPPORTED", "@type");
     }

@@ -18,8 +18,8 @@ import org.springframework.stereotype.Component;
 /**
  * Takes an HMIS's {@code sygnal/event/report} apart (spec §3.1): finds the subscriber by
  * {@code context.senderId}, checks that the report is addressed to this HIE and holds exactly one
- * event with a UUID id, a {@code cce:CceClinicalEvent} box and a FHIR resource, and builds the
- * headers for the OpenHIM channel (spec §3.2). Every failed check is a {@code Nack} (400) with a
+ * {@code cce:CceClinicalEvent} with a UUID id, an {@code occurredAt} and a FHIR resource, and builds
+ * the headers for the OpenHIM channel (spec §3.2). Every failed check is a {@code Nack} (400) with a
  * canonical Beckn code whose text names the field.
  */
 @Component
@@ -49,8 +49,7 @@ public class BecknInboundUnwrapper {
      * @param messageId     {@code context.messageId}
      * @param transactionId {@code context.transactionId}
      * @param eventId       {@code events[0].id}, kept as the CloudEvent id
-     * @param occurredAt    {@code events[0].occurredAt}, or {@code context.timestamp} when it has none
-     * @param eventType     the box's {@code eventType} (logged only)
+     * @param occurredAt    {@code events[0].occurredAt}
      * @param resource      the FHIR resource, as it is
      * @param headers       the headers for the channel, without {@code Authorization} and {@code Content-Type}
      */
@@ -60,7 +59,6 @@ public class BecknInboundUnwrapper {
             String transactionId,
             String eventId,
             String occurredAt,
-            String eventType,
             JsonNode resource,
             Map<String, String> headers
     ) {}
@@ -91,13 +89,18 @@ public class BecknInboundUnwrapper {
             throw BecknNackException.badRequest(ErrorCodes.CTX_MISSING_FIELD, "context.messageId is missing");
         }
 
-        // Exactly one event with a UUID id, revision 1, from the sender
+        // Exactly one event, and it is a cce:CceClinicalEvent. The type is checked first, so that the
+        // sygnal:CoordinationEvent of profile v1.0 is refused as a wrong type.
         JsonNode events = body.path("message").path("events");
         if (!events.isArray() || events.size() != 1) {
             throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
                     "message.events must hold exactly one event");
         }
         JsonNode event = events.get(0);
+        if (!CceClinicalEvent.TYPE.equals(text(event, "@type"))) {
+            throw BecknNackException.badRequest(ErrorCodes.SCH_TYPE_NOT_SUPPORTED,
+                    "events[0].@type must be " + CceClinicalEvent.TYPE);
+        }
         String eventId = text(event, "id");
         if (eventId.isBlank()) {
             throw BecknNackException.badRequest(ErrorCodes.SCH_REQUIRED_FIELD_MISSING, "events[0].id is missing");
@@ -106,46 +109,28 @@ public class BecknInboundUnwrapper {
             throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
                     "events[0].id must be a UUID; CCE de-duplicates on it");
         }
-        JsonNode revision = event.path("revision");
-        if (!revision.isMissingNode() && revision.asInt(-1) != 1) {
-            throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
-                    "events[0].revision must be 1. CCE never replaces an event; send a correction as a new event");
-        }
-        String fromId = text(event.path("from"), "id");
-        if (!fromId.isBlank() && !fromId.equals(senderId)) {
-            throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
-                    "events[0].from.id must equal context.senderId");
-        }
         String occurredAt = text(event, "occurredAt");
-        String occurredAtField = "events[0].occurredAt";
         if (occurredAt.isBlank()) {
-            occurredAt = text(context, "timestamp");
-            occurredAtField = "context.timestamp";
+            throw BecknNackException.badRequest(ErrorCodes.SCH_REQUIRED_FIELD_MISSING,
+                    "events[0].occurredAt is missing");
         }
-        if (!occurredAt.isBlank() && !isTime(occurredAt)) {
+        if (!isTime(occurredAt)) {
             throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
-                    occurredAtField + " is not an ISO-8601 date-time");
+                    "events[0].occurredAt is not an ISO-8601 date-time");
         }
-
-        // The box and its FHIR resource
-        JsonNode attrs = event.path("eventAttributes");
-        if (!CceClinicalEvent.TYPE.equals(text(attrs, "@type"))) {
-            throw BecknNackException.badRequest(ErrorCodes.SCH_TYPE_NOT_SUPPORTED,
-                    "events[0].eventAttributes.@type must be " + CceClinicalEvent.TYPE);
-        }
-        JsonNode resource = attrs.path("resource");
+        JsonNode resource = event.path("resource");
         if (!resource.isObject() || text(resource, "resourceType").isBlank()) {
             throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
-                    "events[0].eventAttributes.resource must be a FHIR resource with a resourceType");
+                    "events[0].resource must be a FHIR resource with a resourceType");
         }
 
         // The HMIS's own id of the event, when it gave one that fits in a header; else the event id
-        String sourceEventId = text(attrs, "sourceEventId");
+        String sourceEventId = text(event, "sourceEventId");
         if (!headerSafe(sourceEventId)) {
             sourceEventId = eventId;
         }
         return new UnwrappedEvent(subscriber, messageId, text(context, "transactionId"), eventId, occurredAt,
-                text(attrs, "eventType"), resource,
+                resource,
                 headers(subscriber, eventId, sourceEventId, occurredAt, headerSafe(messageId) ? messageId : null));
     }
 

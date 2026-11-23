@@ -466,9 +466,9 @@ Registered in `InboundEventService` and `CollectorForwardingService` via constru
 
 > **Status:** Built on branch `sygnal-actions`, on by default (`beckn.enabled=true`; set `OPENHIM_EMITTER_BECKN_ENABLED=false` to turn it off). Full design: [Beckn Integration](beckn-integration.md). With `beckn.enabled=false` and every source on `output: collector`, the CloudEvent and the collector output in §1 are unchanged. The feature is called Sygnal; the settings keep the `beckn.*` prefix and the `OPENHIM_EMITTER_BECKN_*` environment variables.
 
-### 9.1 `sygnal/event/report` Message and `CceClinicalEvent` Box
+### 9.1 `sygnal/event/report` Message and `cce:CceClinicalEvent`
 
-Both legs, HMIS → HIE (inbound) and HIE → CCE (outbound), carry a Sygnal `sygnal/event/report` with **exactly one** event. The `CceClinicalEvent` box sits in `message.events[0].eventAttributes`. There is no contract and no commitment, and no callback follows.
+Both legs, HMIS → HIE (inbound) and HIE → CCE (outbound), carry a Sygnal `sygnal/event/report` with **exactly one** event. The event, `message.events[0]`, is a flat `cce:CceClinicalEvent` (schema v2.0): CCE's own type, not a `sygnal:CoordinationEvent`. Since 2026-11-23 there is no `eventAttributes` bag, `revision`, `eventType`, `granularity` or `from` ([Beckn Integration](beckn-integration.md), "Change 2026-11-23"). There is no contract and no commitment, and no callback follows.
 
 | Context field | Limit / check | Description |
 |---------------|---------------|-------------|
@@ -482,28 +482,20 @@ Both legs, HMIS → HIE (inbound) and HIE → CCE (outbound), carry a Sygnal `sy
 | `context.messageId` | Required. At most 100 characters (CCE) | Echoed in the answer when it is a UUID. Outbound, a new UUID per try. CCE uses it as CloudEvent `correlationid` |
 | `context.timestamp` | ISO-8601 | Outbound, the time of sending |
 
-| Event field | Limit / check | Description |
-|-------------|---------------|-------------|
-| `@type` | — | `sygnal:CoordinationEvent`. The event object has no `@context` |
-| `id` | Required, a full UUID (CCE allows at most 50 characters) | The event id. The same id on every hop: the HMIS's id becomes this adaptor's CloudEvent `id`, which is the outbound event `id`, which CCE uses as its CloudEvent `id`. So a resent copy is a duplicate |
-| `revision` | 1 when present | Always `1` outbound |
-| `eventType` | — | `DELIVERY_RECORDED` |
-| `granularity` | — | `INDIVIDUAL` |
-| `from.id`, `from.role` | `from.id`, when present, must equal `context.senderId` | Outbound, `beckn.self.id` and `PROVIDER` |
-| `occurredAt` | ISO-8601 (inbound: `context.timestamp` is used when there is none) | When the clinical event happened. Outbound, the CloudEvent `time`. CCE uses it as its CloudEvent `time` |
-| `eventAttributes` | `@type` must be `cce:CceClinicalEvent` | The box below |
+| Event field | Required | Limit / check | Description |
+|-------------|----------|---------------|-------------|
+| `@context` | Yes | — | `<schema-base-url>/CceClinicalEvent/v2.0/context.jsonld`. Default base: `https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema` |
+| `@type` | Yes | Must be `cce:CceClinicalEvent` | Else `Nack` 400 `SCH_TYPE_NOT_SUPPORTED`. This also refuses the old `sygnal:CoordinationEvent` |
+| `id` | Yes | A full UUID (CCE allows at most 50 characters) | The event id. The same id on every hop and every retry: the HMIS's id becomes this adaptor's CloudEvent `id`, which is the outbound event `id`, which CCE uses as its CloudEvent `id`. So a resent copy is a duplicate |
+| `occurredAt` | Yes | ISO-8601 date-time | When the clinical event happened. Outbound, the CloudEvent `time`. CCE uses it as its CloudEvent `time` |
+| `patientId` | Yes | — | Patient UPID. Outbound, the CloudEvent `subject` |
+| `fhirVersion` | Yes | `4.0.1` | Always `4.0.1` |
+| `facilityId` | No | — | Facility id |
+| `facilityName` | No | — | Facility display name. Not sent by this adaptor |
+| `sourceEventId` | No | — | The sender's own id for the event |
+| `resource` | Yes | An object with `resourceType` | One FHIR R4 resource. Else `Nack` 400 `SCH_SCHEMA_VALIDATION_FAILED`. Its `resourceType` is the kind of clinical event |
 
-| Box field | Required | Description |
-|-----------|----------|-------------|
-| `@context` | Yes | `<schema-base-url>/CceClinicalEvent/v1.0/context.jsonld`. Default base: `https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema` |
-| `@type` | Yes | `cce:CceClinicalEvent`. Else `Nack` 400 `SCH_TYPE_NOT_SUPPORTED` |
-| `eventType` | Yes | Any non-empty string for CCE. This adaptor sends the FHIR resource type, e.g. `Encounter`. Values to agree with the CCE team |
-| `patientId` | Yes | Patient UPID |
-| `fhirVersion` | Yes | Always `4.0.1` |
-| `resource` | Yes | One FHIR R4 resource, with `resourceType`. Else `Nack` 400 `SCH_SCHEMA_VALIDATION_FAILED` |
-| `facilityId` | No | Facility id |
-| `facilityName` | No | Facility display name |
-| `sourceEventId` | No | The sender's own id for the event |
+The object is closed: no other field is accepted (onix checks this against the profile), and this adaptor sends no other field. An optional field without a value is left out.
 
 The error codes of each check are in [API Reference §8](api-reference.md#8-sygnal-endpoint-and-call-proposal).
 
@@ -511,29 +503,30 @@ The error codes of each check are in [API Reference §8](api-reference.md#8-sygn
 
 | Channel request part | Taken from |
 |----------------------|------------|
-| Body | `events[0].eventAttributes.resource`, as it is |
+| Body | `events[0].resource`, as it is |
 | `X-Source-System` | `beckn.subscribers[].source-system` of the subscriber matched by `context.senderId` |
-| `X-Source-Event-Id` | `eventAttributes.sourceEventId` when present and header-safe (printable ASCII, at most 200 characters), else `events[0].id`. Becomes CloudEvent `sourceeventid` |
+| `X-Source-Event-Id` | `events[0].sourceEventId` when present and header-safe (printable ASCII, at most 200 characters), else `events[0].id`. Becomes CloudEvent `sourceeventid` |
 | `X-Sygnal-Event-Id` | `events[0].id`. The CloudEvent `id`, when it is a full UUID (`EventIdGenerator`); else ignored |
-| `X-Sygnal-Occurred-At` | `events[0].occurredAt`, else `context.timestamp`; left out when both are blank. The CloudEvent `time`, when it parses as an ISO-8601 offset date-time; else the time of receipt |
+| `X-Sygnal-Occurred-At` | `events[0].occurredAt`. The CloudEvent `time`, when it parses as an ISO-8601 offset date-time; else the time of receipt |
 | `X-Correlation-Id` | `context.messageId`, when header-safe. Used for `correlationid` only if `X-OpenHIM-TransactionID` is absent, which it is not when the request comes through OpenHIM |
 | `X-Facility-Id` | Not sent. Facility comes from the resource (`FacilityIdExtractor`) |
 
 Without the `X-Sygnal-*` headers (a request that did not come in over Sygnal) nothing changes: CloudEvent `id` = UUID v5 of `<source key>:<X-Source-Event-Id>`, or a random UUID; `time` = time of receipt.
 
-The box's `eventType`, `patientId`, `fhirVersion` and `sourceEventId` are logged, not sent (except `sourceEventId` as above). The pipeline reads patient and facility from the resource.
+The event's `patientId`, `fhirVersion`, `facilityId` and `facilityName` are not sent to the channel. The pipeline reads patient and facility from the resource.
 
 ### 9.3 CloudEvent → Outbound Event
 
-| Event / box field | From the CloudEvent (§1.1) | Note |
+| Event field | From the CloudEvent (§1.1) | Note |
 |-------------------|----------------------------|------|
-| `events[0].id` | `id` | Fixed per event. For an event that came in over Sygnal, the HMIS's event id. CCE uses it unchanged as its CloudEvent `id`, so a resent copy is a duplicate (CCE answers `202 ACK` for it too) |
-| `events[0].occurredAt` | `time` | For an event that came in over Sygnal, the HMIS's `occurredAt` |
-| `eventType` | `type` | |
+| `@context`, `@type` | — | `<beckn.schema-base-url>/CceClinicalEvent/v2.0/context.jsonld`, `cce:CceClinicalEvent` |
+| `id` | `id` | Fixed per event. For an event that came in over Sygnal, the HMIS's event id. CCE uses it unchanged as its CloudEvent `id`, so a resent copy is a duplicate (CCE answers `202 ACK` for it too) |
+| `occurredAt` | `time` | For an event that came in over Sygnal, the HMIS's `occurredAt`; else the time of receipt |
+| — | `type` | Not a field: the FHIR resource type is `resource.resourceType`, which CCE uses as its CloudEvent `type` |
 | `patientId` | `subject` | |
-| `facilityId` | `facilityid` | Left out when null |
+| `facilityId` | `facilityid` | Left out when blank |
 | `facilityName` | `facilityname` | Not in `CloudEventDto` today. Left out |
-| `sourceEventId` | `sourceeventid` | |
+| `sourceEventId` | `sourceeventid` | Left out when blank |
 | `fhirVersion` | — | `4.0.1` |
 | `resource` | `data` | Already redacted (§3.6) |
 | Not carried | `specversion`, `source`, `datacontenttype`, `correlationid`, `protocolinstanceid`, `protocoldefinitionid`, `actionid` | `cce-beckn-service` rebuilds the CloudEvent: `source` = `context.senderId` (`beckn.self.id`), `time` = `occurredAt`, `correlationid` = the outbound `context.messageId`, `datacontenttype` = `application/fhir+json`. The protocol fields are lost. Full mapping: [Beckn Integration §5](beckn-integration.md) |

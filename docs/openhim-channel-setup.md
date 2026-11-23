@@ -289,9 +289,9 @@ The Sygnal endpoint reads the answer of `/inbound` to decide between `Ack` (202)
 | Header | Set by | Used for |
 |--------|--------|----------|
 | `X-Source-System` | Sygnal endpoint: the subscriber's `source-system` | Source resolution (the client id matches no source) |
-| `X-Source-Event-Id` | Sygnal endpoint: `eventAttributes.sourceEventId`, else `events[0].id` | CloudEvent `sourceeventid` |
+| `X-Source-Event-Id` | Sygnal endpoint: `events[0].sourceEventId`, else `events[0].id` | CloudEvent `sourceeventid` |
 | `X-Sygnal-Event-Id` | Sygnal endpoint: `events[0].id` | CloudEvent `id` (when it is a full UUID), so CCE de-duplicates on the HMIS's own event id |
-| `X-Sygnal-Occurred-At` | Sygnal endpoint: `events[0].occurredAt`, else `context.timestamp` | CloudEvent `time` (when it parses as ISO-8601; else the time of receipt) |
+| `X-Sygnal-Occurred-At` | Sygnal endpoint: `events[0].occurredAt` | CloudEvent `time` (when it parses as ISO-8601; else the time of receipt) |
 | `X-Correlation-Id` | Sygnal endpoint: `context.messageId` | Not used for `correlationid` here: `X-OpenHIM-TransactionID` wins |
 | `X-OpenHIM-ClientID`, `X-OpenHIM-TransactionID` | OpenHIM Core | As in §5 |
 

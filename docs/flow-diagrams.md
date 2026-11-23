@@ -381,8 +381,8 @@ sequenceDiagram
     OR->>BW: POST /sygnal/event/report
     activate BW
     Note over BW: Counter: cce.emitter.beckn.received
-    BW->>BW: action, senderId in subscribers, receiverId = beckn.self.id,<br/>messageId, exactly one event, id a UUID, CceClinicalEvent box
-    BW->>BW: take events[0].eventAttributes.resource
+    BW->>BW: action, senderId in subscribers, receiverId = beckn.self.id,<br/>messageId, exactly one event, @type cce:CceClinicalEvent,<br/>id a UUID, occurredAt
+    BW->>BW: take events[0].resource
     BW->>OHC: POST channel (Basic auth)<br/>X-Source-System, X-Source-Event-Id, X-Sygnal-Event-Id,<br/>X-Sygnal-Occurred-At, X-Correlation-Id
     activate OHC
     Note over BW: Timer: cce.emitter.beckn.channel.latency
@@ -398,7 +398,7 @@ sequenceDiagram
     IN->>IN: EventForwardingRouter: source output = beckn
     IN->>BF: forward(cloudEvent)
     activate BF
-    BF->>BF: CceClinicalEventMapper: CloudEvent → box<br/>events[0].id = CloudEvent id (the HMIS's id)
+    BF->>BF: CceClinicalEventMapper: CloudEvent → cce:CceClinicalEvent<br/>events[0].id = CloudEvent id (the HMIS's id)
     BF->>OC: POST /sygnal/caller/sygnal/event/report
     activate OC
     Note over BF: Timer: cce.emitter.beckn.onix.latency
@@ -430,7 +430,7 @@ flowchart TD
     B -->|No| N0[Nack 400<br/>CTX_ACTION_MISMATCH]
     B -->|Yes| C{senderId a subscriber,<br/>receiverId = beckn.self.id,<br/>messageId present?}
     C -->|No| N1[Nack 400<br/>CTX_MISSING_FIELD or<br/>CTX_INVALID_FIELD]
-    C -->|Yes| D{one event, id a UUID,<br/>CceClinicalEvent box,<br/>resource with resourceType?}
+    C -->|Yes| D{one event, @type cce:CceClinicalEvent,<br/>id a UUID, occurredAt,<br/>resource with resourceType?}
     D -->|No| N2[Nack 400<br/>SCH_REQUIRED_FIELD_MISSING,<br/>SCH_SCHEMA_VALIDATION_FAILED or<br/>SCH_TYPE_NOT_SUPPORTED]
     D -->|Yes| E[POST FHIR to OpenHIM channel]
     E --> F{Channel answer}

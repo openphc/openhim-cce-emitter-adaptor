@@ -6,19 +6,22 @@ import org.openphc.cce.emitter.model.beckn.CceClinicalEvent;
 import org.springframework.stereotype.Component;
 
 /**
- * Maps a built CloudEvent to the {@code CceClinicalEvent} box (spec §5.2). The event id of the
- * {@code sygnal/event/report} is the CloudEvent {@code id} and its {@code occurredAt} the CloudEvent
- * {@code time}; the box carries the rest.
+ * Maps a built CloudEvent to the {@code cce:CceClinicalEvent} that a {@code sygnal/event/report}
+ * carries (spec §5.2).
  *
  * <ul>
- *   <li>{@code eventType} ← {@code type} (the FHIR resource type)</li>
+ *   <li>{@code id} ← {@code id}: for an event that came in over Sygnal, the id the HMIS sent</li>
+ *   <li>{@code occurredAt} ← {@code time}</li>
  *   <li>{@code patientId} ← {@code subject}</li>
- *   <li>{@code facilityId} ← {@code facilityid}, left out when null</li>
- *   <li>{@code facilityName} — left out: the CloudEvent has none (spec §9.3)</li>
- *   <li>{@code sourceEventId} ← {@code sourceeventid}, left out when null</li>
  *   <li>{@code fhirVersion} — always {@code 4.0.1}</li>
+ *   <li>{@code facilityId} ← {@code facilityid}, left out when blank</li>
+ *   <li>{@code facilityName} — left out: the CloudEvent has none (spec §9.3)</li>
+ *   <li>{@code sourceEventId} ← {@code sourceeventid}, left out when blank</li>
  *   <li>{@code resource} ← {@code data}, the redacted FHIR resource</li>
  * </ul>
+ *
+ * The CloudEvent {@code type} (the FHIR resource type) has no field of its own: CCE reads it from
+ * {@code resource.resourceType}.
  */
 @Component
 public class CceClinicalEventMapper {
@@ -29,15 +32,16 @@ public class CceClinicalEventMapper {
         this.props = props;
     }
 
-    public CceClinicalEvent toBox(CloudEventDto event) {
+    public CceClinicalEvent toClinicalEvent(CloudEventDto event) {
         return new CceClinicalEvent(
                 contextUrl(),
                 CceClinicalEvent.TYPE,
-                event.getType(),
+                event.getId(),
+                blankToNull(event.getTime()),
                 event.getSubject(),
+                CceClinicalEvent.FHIR_VERSION,
                 blankToNull(event.getFacilityid()),
                 null,
-                CceClinicalEvent.FHIR_VERSION,
                 blankToNull(event.getSourceeventid()),
                 event.getData());
     }
@@ -47,7 +51,7 @@ public class CceClinicalEventMapper {
         if (base.endsWith("/")) {
             base = base.substring(0, base.length() - 1);
         }
-        return base + "/CceClinicalEvent/v1.0/context.jsonld";
+        return base + CceClinicalEvent.CONTEXT_PATH;
     }
 
     private static String blankToNull(String s) {
