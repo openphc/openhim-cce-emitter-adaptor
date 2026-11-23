@@ -19,7 +19,6 @@ public final class BecknTestSupport {
     public static final String OCCURRED_AT = "2026-11-13T07:55:00Z";
     public static final String SOURCE_EVENT_ID = "Encounter/7d2c9b1e";
     public static final String SCHEMA_BASE_URL = "https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema";
-    public static final String EVENT_CONTEXT = SCHEMA_BASE_URL + "/CceClinicalEvent/v2.0/context.jsonld";
 
     private BecknTestSupport() {
     }
@@ -63,24 +62,31 @@ public final class BecknTestSupport {
         return report(OPENMRS_ID, SELF_ID, event(EVENT_ID, resourceJson));
     }
 
-    /** One {@code cce:CceClinicalEvent} (schema v2.0), as an HMIS sends it. */
+    /** One extended {@code sygnal:CoordinationEvent} (profile v3.0), as an HMIS sends it. */
     public static String event(String id, String resourceJson) {
         return """
                 {
-                  "@context": "%s",
-                  "@type": "cce:CceClinicalEvent",
+                  "@type": "sygnal:CoordinationEvent",
                   "id": "%s",
+                  "revision": 1,
+                  "eventType": "DELIVERY_RECORDED",
+                  "granularity": "INDIVIDUAL",
+                  "from": { "id": "%s", "role": "PROVIDER" },
                   "occurredAt": "%s",
                   "patientId": "1198503150001234",
                   "fhirVersion": "4.0.1",
                   "sourceEventId": "%s",
                   "resource": %s
                 }
-                """.formatted(EVENT_CONTEXT, id, OCCURRED_AT, SOURCE_EVENT_ID, resourceJson);
+                """.formatted(id, OPENMRS_ID, OCCURRED_AT, SOURCE_EVENT_ID, resourceJson);
     }
 
-    /** The event of profile v1.0: a {@code sygnal:CoordinationEvent} with the CCE data in a bag. No longer accepted. */
-    public static String oldEvent(String id, String resourceJson) {
+    /**
+     * The event of profile v1.0: a {@code sygnal:CoordinationEvent} with the CCE data, the FHIR
+     * resource included, in an {@code eventAttributes} bag. It has no {@code resource} of its own,
+     * so it is refused.
+     */
+    public static String bagEvent(String id, String resourceJson) {
         return """
                 {
                   "@type": "sygnal:CoordinationEvent",
@@ -101,6 +107,22 @@ public final class BecknTestSupport {
                   }
                 }
                 """.formatted(id, OPENMRS_ID, OCCURRED_AT, SOURCE_EVENT_ID, resourceJson);
+    }
+
+    /** The event of profile v2.0: a flat {@code cce:CceClinicalEvent}. Refused as a wrong type. */
+    public static String cceClinicalEvent(String id, String resourceJson) {
+        return """
+                {
+                  "@context": "https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema/CceClinicalEvent/v2.0/context.jsonld",
+                  "@type": "cce:CceClinicalEvent",
+                  "id": "%s",
+                  "occurredAt": "%s",
+                  "patientId": "1198503150001234",
+                  "fhirVersion": "4.0.1",
+                  "sourceEventId": "%s",
+                  "resource": %s
+                }
+                """.formatted(id, OCCURRED_AT, SOURCE_EVENT_ID, resourceJson);
     }
 
     public static final String ENCOUNTER = """

@@ -1,5 +1,6 @@
 package org.openphc.cce.emitter.adaptor;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
@@ -10,7 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import org.openphc.cce.emitter.config.BecknProperties;
 import org.openphc.cce.emitter.exception.BecknNackException;
-import org.openphc.cce.emitter.model.beckn.CceClinicalEvent;
+import org.openphc.cce.emitter.model.beckn.CoordinationEvent;
 import org.openphc.cce.emitter.model.beckn.ErrorCodes;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -18,9 +19,10 @@ import org.springframework.stereotype.Component;
 /**
  * Takes an HMIS's {@code sygnal/event/report} apart (spec §3.1): finds the subscriber by
  * {@code context.senderId}, checks that the report is addressed to this HIE and holds exactly one
- * {@code cce:CceClinicalEvent} with a UUID id, an {@code occurredAt} and a FHIR resource, and builds
- * the headers for the OpenHIM channel (spec §3.2). Every failed check is a {@code Nack} (400) with a
- * canonical Beckn code whose text names the field.
+ * {@code sygnal:CoordinationEvent} (the extended one of profile v3.0) with a UUID id, an
+ * {@code occurredAt} and a FHIR resource, and builds the headers for the OpenHIM channel (spec §3.2).
+ * Every failed check is a {@code Nack} (400) with a canonical Beckn code whose text names the field.
+ * The type is open: a field this class does not know is ignored, and {@code @context} is not needed.
  */
 @Component
 @ConditionalOnProperty(prefix = "beckn", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -89,17 +91,17 @@ public class BecknInboundUnwrapper {
             throw BecknNackException.badRequest(ErrorCodes.CTX_MISSING_FIELD, "context.messageId is missing");
         }
 
-        // Exactly one event, and it is a cce:CceClinicalEvent. The type is checked first, so that the
-        // sygnal:CoordinationEvent of profile v1.0 is refused as a wrong type.
+        // Exactly one event, and it is a sygnal:CoordinationEvent. The type is checked first, so that
+        // the cce:CceClinicalEvent of profile v2.0 is refused as a wrong type.
         JsonNode events = body.path("message").path("events");
         if (!events.isArray() || events.size() != 1) {
             throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
                     "message.events must hold exactly one event");
         }
         JsonNode event = events.get(0);
-        if (!CceClinicalEvent.TYPE.equals(text(event, "@type"))) {
+        if (!CoordinationEvent.TYPE.equals(text(event, "@type"))) {
             throw BecknNackException.badRequest(ErrorCodes.SCH_TYPE_NOT_SUPPORTED,
-                    "events[0].@type must be " + CceClinicalEvent.TYPE);
+                    "events[0].@type must be " + CoordinationEvent.TYPE);
         }
         String eventId = text(event, "id");
         if (eventId.isBlank()) {
@@ -108,6 +110,16 @@ public class BecknInboundUnwrapper {
         if (!UUID_FORM.matcher(eventId).matches()) {
             throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
                     "events[0].id must be a UUID; CCE de-duplicates on it");
+        }
+        JsonNode revision = event.path("revision");
+        if (!revision.isMissingNode() && !isOne(revision)) {
+            throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
+                    "events[0].revision must be 1. CCE never replaces an event; send a correction as a new event");
+        }
+        String fromId = text(event.path("from"), "id");
+        if (!fromId.isBlank() && !fromId.equals(senderId)) {
+            throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
+                    "events[0].from.id must equal context.senderId");
         }
         String occurredAt = text(event, "occurredAt");
         if (occurredAt.isBlank()) {
@@ -118,6 +130,9 @@ public class BecknInboundUnwrapper {
             throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
                     "events[0].occurredAt is not an ISO-8601 date-time");
         }
+
+        // The FHIR resource is a field of the event itself. An event of profile v1.0, which has it
+        // in an eventAttributes bag, is refused here.
         JsonNode resource = event.path("resource");
         if (!resource.isObject() || text(resource, "resourceType").isBlank()) {
             throw BecknNackException.badRequest(ErrorCodes.SCH_SCHEMA_VALIDATION_FAILED,
@@ -154,6 +169,11 @@ public class BecknInboundUnwrapper {
     static boolean headerSafe(String value) {
         return value != null && !value.isBlank() && value.length() <= 200
                 && value.chars().allMatch(c -> c >= 0x20 && c < 0x7f);
+    }
+
+    /** The JSON number 1 (also written 1.0). Not the text "1", and not null. */
+    private static boolean isOne(JsonNode value) {
+        return value.isNumber() && value.decimalValue().compareTo(BigDecimal.ONE) == 0;
     }
 
     private static boolean isTime(String value) {

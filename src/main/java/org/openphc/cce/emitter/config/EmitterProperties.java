@@ -24,7 +24,7 @@ public record EmitterProperties(
     public enum Output {
         /** POST to the CCE Collector ({@code {cce.collector.url}/v1/events}). Today's behaviour. */
         COLLECTOR,
-        /** Send to CCE as the {@code cce:CceClinicalEvent} of a Sygnal {@code sygnal/event/report}. */
+        /** Send to CCE as the {@code sygnal:CoordinationEvent} of a Sygnal {@code sygnal/event/report}. */
         BECKN
     }
 

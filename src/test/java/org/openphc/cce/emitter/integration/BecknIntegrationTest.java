@@ -214,16 +214,20 @@ class BecknIntegrationTest {
             assertThat(c.has("bapId") || c.has("bppId") || c.has("bapUri") || c.has("bppUri")).isFalse();
             assertThat(r.path("message").has("contract")).isFalse();
 
-            // message.events = [ the flat cce:CceClinicalEvent v2.0 ]: these fields and no other
+            // message.events = [ the extended sygnal:CoordinationEvent of profile v3.0 ]: these fields,
+            // in this order, and no other. The id and occurredAt are the ones the HMIS sent; from is the HIE.
             assertThat(r.path("message").fieldNames()).toIterable().containsExactly("events");
             JsonNode events = r.at("/message/events");
             assertThat(events).hasSize(1);
             JsonNode e = events.get(0);
             assertThat(e).isEqualTo(mapper.readTree("""
                     {
-                      "@context": "https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema/CceClinicalEvent/v2.0/context.jsonld",
-                      "@type": "cce:CceClinicalEvent",
+                      "@type": "sygnal:CoordinationEvent",
                       "id": "%s",
+                      "revision": 1,
+                      "eventType": "DELIVERY_RECORDED",
+                      "granularity": "INDIVIDUAL",
+                      "from": { "id": "%s", "role": "PROVIDER" },
                       "occurredAt": "%s",
                       "patientId": "1198503150001234",
                       "fhirVersion": "4.0.1",
@@ -231,13 +235,16 @@ class BecknIntegrationTest {
                       "sourceEventId": "%s",
                       "resource": %s
                     }
-                    """.formatted(EVENT_ID, OCCURRED_AT, SOURCE_EVENT_ID, ENCOUNTER)));
-            assertThat(e.fieldNames()).toIterable().containsExactly("@context", "@type", "id", "occurredAt",
-                    "patientId", "fhirVersion", "facilityId", "sourceEventId", "resource");
-            // Nothing of the sygnal:CoordinationEvent of profile v1.0
+                    """.formatted(EVENT_ID, SELF_ID, OCCURRED_AT, SOURCE_EVENT_ID, ENCOUNTER)));
+            assertThat(e.fieldNames()).toIterable().containsExactly("@type", "id", "revision", "eventType",
+                    "granularity", "from", "occurredAt", "patientId", "fhirVersion", "facilityId", "sourceEventId",
+                    "resource");
+            assertThat(e.path("from").fieldNames()).toIterable().containsExactly("id", "role");
+            assertThat(e.path("revision").isInt()).isTrue();
+            // Nothing of profile v1.0 (the bag) or v2.0 (cce:CceClinicalEvent with an @context), and no null
             assertThat(e.has("eventAttributes")).isFalse();
-            assertThat(r.toString()).doesNotContain("sygnal:CoordinationEvent", "eventAttributes", "eventType",
-                    "revision", "granularity", "\"from\"", "DELIVERY_RECORDED");
+            assertThat(e.has("@context")).isFalse();
+            assertThat(r.toString()).doesNotContain("@context", "eventAttributes", "CceClinicalEvent", "cce:", "null");
 
             // Nothing went to the collector, and nothing but the report went to onix
             wm.verify(0, postRequestedFor(urlEqualTo("/v1/events")));
@@ -389,16 +396,67 @@ class BecknIntegrationTest {
         }
 
         @Test
-        @DisplayName("the old sygnal:CoordinationEvent with an eventAttributes bag → Nack 400 SCH_TYPE_NOT_SUPPORTED")
-        void oldCoordinationEvent() throws Exception {
-            sendReport(report(OPENMRS_ID, SELF_ID, oldEvent(EVENT_ID, ENCOUNTER)))
+        @DisplayName("the cce:CceClinicalEvent of profile v2.0 → Nack 400 SCH_TYPE_NOT_SUPPORTED")
+        void cceClinicalEventOfProfile2() throws Exception {
+            sendReport(report(OPENMRS_ID, SELF_ID, cceClinicalEvent(EVENT_ID, ENCOUNTER)))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.message.status", is("NACK")))
                     .andExpect(jsonPath("$.message.messageId", is(MESSAGE_ID)))
                     .andExpect(jsonPath("$.message.error.code", is("SCH_TYPE_NOT_SUPPORTED")))
-                    .andExpect(jsonPath("$.message.error.message", is("events[0].@type must be cce:CceClinicalEvent")));
+                    .andExpect(jsonPath("$.message.error.message",
+                            is("events[0].@type must be sygnal:CoordinationEvent")));
             wm.verify(0, postRequestedFor(urlEqualTo("/inbound")));
             onlyReportsWentToOnix(0);
+        }
+
+        @Test
+        @DisplayName("the bag event of profile v1.0 (resource in eventAttributes) → Nack 400 for the missing resource")
+        void bagEventOfProfile1() throws Exception {
+            sendReport(report(OPENMRS_ID, SELF_ID, bagEvent(EVENT_ID, ENCOUNTER)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message.status", is("NACK")))
+                    .andExpect(jsonPath("$.message.messageId", is(MESSAGE_ID)))
+                    .andExpect(jsonPath("$.message.error.code", is("SCH_SCHEMA_VALIDATION_FAILED")))
+                    .andExpect(jsonPath("$.message.error.message",
+                            is("events[0].resource must be a FHIR resource with a resourceType")));
+            wm.verify(0, postRequestedFor(urlEqualTo("/inbound")));
+            onlyReportsWentToOnix(0);
+        }
+
+        @Test
+        @DisplayName("revision 2 → Nack 400 SCH_SCHEMA_VALIDATION_FAILED")
+        void revisionTwo() throws Exception {
+            sendReport(report(OPENMRS_ID, SELF_ID, event(EVENT_ID, ENCOUNTER).replace("\"revision\": 1", "\"revision\": 2")))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message.error.code", is("SCH_SCHEMA_VALIDATION_FAILED")))
+                    .andExpect(jsonPath("$.message.error.message", startsWith("events[0].revision must be 1")));
+            wm.verify(0, postRequestedFor(urlEqualTo("/inbound")));
+        }
+
+        @Test
+        @DisplayName("from.id of another participant → Nack 400 SCH_SCHEMA_VALIDATION_FAILED")
+        void fromIsNotTheSender() throws Exception {
+            String e = event(EVENT_ID, ENCOUNTER).replace("\"from\": { \"id\": \"" + OPENMRS_ID + "\"",
+                    "\"from\": { \"id\": \"bap.other.example.org\"");
+            sendReport(report(OPENMRS_ID, SELF_ID, e))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message.error.code", is("SCH_SCHEMA_VALIDATION_FAILED")))
+                    .andExpect(jsonPath("$.message.error.message", is("events[0].from.id must equal context.senderId")));
+            wm.verify(0, postRequestedFor(urlEqualTo("/inbound")));
+        }
+
+        @Test
+        @DisplayName("an unknown extra field in the event is ignored, and is not passed on to CCE")
+        void unknownFieldIsIgnored() throws Exception {
+            stubCceAck();
+            String e = event(EVENT_ID, ENCOUNTER).replace("\"revision\": 1,",
+                    "\"revision\": 1, \"somethingNew\": \"x\", \"@context\": \"https://example.org/context.jsonld\",");
+            sendReport(report(OPENMRS_ID, SELF_ID, e))
+                    .andExpect(status().isAccepted())
+                    .andExpect(jsonPath("$.message.status", is("ACK")));
+            JsonNode sent = reportsToCce().get(0);
+            assertThat(sent.at("/message/events/0/id").asText()).isEqualTo(EVENT_ID);
+            assertThat(sent.toString()).doesNotContain("somethingNew", "@context");
         }
 
         @Test
@@ -470,12 +528,21 @@ class BecknIntegrationTest {
             JsonNode e = reportsToCce().get(0).at("/message/events/0");
             assertThat(e.path("id").asText())
                     .matches("[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}");
-            // The same flat cce:CceClinicalEvent; occurredAt is the time of receipt
-            assertThat(e.fieldNames()).toIterable().containsExactly("@context", "@type", "id", "occurredAt",
-                    "patientId", "fhirVersion", "facilityId", "sourceEventId", "resource");
-            assertThat(e.path("@type").asText()).isEqualTo("cce:CceClinicalEvent");
-            assertThat(e.path("@context").asText()).isEqualTo(EVENT_CONTEXT);
+            // The same extended sygnal:CoordinationEvent; occurredAt is the time of receipt
+            assertThat(e.fieldNames()).toIterable().containsExactly("@type", "id", "revision", "eventType",
+                    "granularity", "from", "occurredAt", "patientId", "fhirVersion", "facilityId", "sourceEventId",
+                    "resource");
+            assertThat(e.path("@type").asText()).isEqualTo("sygnal:CoordinationEvent");
+            assertThat(e.path("revision").asInt()).isEqualTo(1);
+            assertThat(e.path("eventType").asText()).isEqualTo("DELIVERY_RECORDED");
+            assertThat(e.path("granularity").asText()).isEqualTo("INDIVIDUAL");
+            assertThat(e.path("from")).isEqualTo(mapper.readTree(
+                    "{\"id\":\"" + SELF_ID + "\",\"role\":\"PROVIDER\"}"));
             assertThat(e.path("occurredAt").asText()).isNotBlank();
+            assertThat(e.path("patientId").asText()).isEqualTo("1198503150001234");
+            assertThat(e.path("fhirVersion").asText()).isEqualTo("4.0.1");
+            assertThat(e.path("sourceEventId").asText()).isEqualTo(SOURCE_EVENT_ID);
+            assertThat(e.toString()).doesNotContain("@context", "eventAttributes", "CceClinicalEvent");
             onlyReportsWentToOnix(1);
         }
 
