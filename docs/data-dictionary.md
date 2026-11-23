@@ -468,7 +468,7 @@ Registered in `InboundEventService` and `CollectorForwardingService` via constru
 
 ### 9.1 `sygnal/event/report` Message and `sygnal:CoordinationEvent`
 
-Both legs, HMIS → HIE (inbound) and HIE → CCE (outbound), carry a Sygnal `sygnal/event/report` with **exactly one** event. The event, `message.events[0]`, is a `sygnal:CoordinationEvent` as CCE's profile v3.0 extends it: the fields from `patientId` down are added to the type in CCE's copy of the schema, and the type is open. Since 2026-11-23 there is no `cce:CceClinicalEvent`, no `eventAttributes` bag and no `@context` in the message ([Beckn Integration](beckn-integration.md), "Change 2026-11-23"). There is no contract and no commitment, and no callback follows.
+Both legs, HMIS → HIE (inbound) and HIE → CCE (outbound), carry a Sygnal `sygnal/event/report` with **exactly one** event. The event, `message.events[0]`, is a `sygnal:CoordinationEvent` as CCE's profile v3.0 extends it: the fields from `patientId` down are added to the type in CCE's copy of the schema (`CoordinationEventFhirExtension` in `cce-fhir-extension.yaml`, which `cce-sygnal-apis.yaml` refers to; both in `schema/sygnal-profile/v3.0/` of `cce-beckn-service`), and the type is open. Since 2026-11-23 there is no `cce:CceClinicalEvent`, no `eventAttributes` bag and no `@context` in the message ([Beckn Integration](beckn-integration.md), "Change 2026-11-23"). There is no contract and no commitment, and no callback follows.
 
 | Context field | Limit / check | Description |
 |---------------|---------------|-------------|
