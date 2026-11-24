@@ -8,7 +8,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 
-import org.openphc.cce.emitter.cloudevents.CceClinicalEventMapper;
+import org.openphc.cce.emitter.cloudevents.CoordinationEventMapper;
 import org.openphc.cce.emitter.config.BecknProperties;
 import org.openphc.cce.emitter.exception.CollectorClientException;
 import org.openphc.cce.emitter.exception.CollectorForwardingException;
@@ -21,9 +21,10 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 /**
- * The Sygnal output (spec §5): wraps a CloudEvent in the {@code CceClinicalEvent} box, sends it to
- * CCE as a {@code sygnal/event/report} through {@code onix-openhim}, and maps CCE's answer to what
- * the collector path gives {@link InboundEventService} (spec §5.4), so {@code /inbound}'s answer,
+ * The Sygnal output (spec §5): maps a CloudEvent to an extended {@code sygnal:CoordinationEvent},
+ * sends it to CCE as the one event of a {@code sygnal/event/report} through {@code onix-openhim}, and
+ * maps CCE's answer to what the collector path gives {@link InboundEventService} (spec §5.4), so
+ * {@code /inbound}'s answer,
  * the OpenHIM transaction and the existing metrics behave the same:
  *
  * <ul>
@@ -46,7 +47,7 @@ public class BecknForwardingService {
 
     private final BecknOnixClient onix;
     private final BecknMessageFactory messages;
-    private final CceClinicalEventMapper boxMapper;
+    private final CoordinationEventMapper eventMapper;
     private final CceAnswerMapper answerMapper;
     private final BecknProperties props;
     private final MeterRegistry meterRegistry;
@@ -54,11 +55,11 @@ public class BecknForwardingService {
     private final Counter rejectedCounter;
 
     public BecknForwardingService(BecknOnixClient onix, BecknMessageFactory messages,
-                                  CceClinicalEventMapper boxMapper, BecknProperties props,
+                                  CoordinationEventMapper eventMapper, BecknProperties props,
                                   ObjectMapper objectMapper, MeterRegistry meterRegistry) {
         this.onix = onix;
         this.messages = messages;
-        this.boxMapper = boxMapper;
+        this.eventMapper = eventMapper;
         this.answerMapper = new CceAnswerMapper(objectMapper);
         this.props = props;
         this.meterRegistry = meterRegistry;
@@ -86,8 +87,7 @@ public class BecknForwardingService {
         String transactionId = BecknMessageFactory.newId();
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             String messageId = BecknMessageFactory.newId();
-            ObjectNode report = messages.eventReport(transactionId, messageId, event.getId(), event.getTime(),
-                    boxMapper.toBox(event));
+            ObjectNode report = messages.eventReport(transactionId, messageId, eventMapper.toCoordinationEvent(event));
             long started = System.nanoTime();
             HttpAnswer answer = onix.post(BecknMessageFactory.EVENT_REPORT, report);
             long tookMs = (System.nanoTime() - started) / 1_000_000;

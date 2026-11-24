@@ -163,6 +163,7 @@ cce:
 # subscribers are set and consistent (BecknStartupValidator).
 beckn:
   enabled: ${OPENHIM_EMITTER_BECKN_ENABLED:true}
+  # Not used in a message since profile v3.0 (no object of the report carries an @context). Kept for existing deployments.
   schema-base-url: ${OPENHIM_EMITTER_BECKN_SCHEMA_BASE_URL:https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema}
   onix:                                              # this HIE's onix container
     caller-url: ${OPENHIM_EMITTER_BECKN_ONIX_CALLER_URL:http://onix-openhim:8082/sygnal/caller}  # + /sygnal/event/report

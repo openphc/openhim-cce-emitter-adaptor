@@ -628,7 +628,7 @@ To test CCE's other answers, swap the stub's status and body:
 ```yaml
 beckn:
   enabled: true
-  # schema-base-url: default, https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema
+  # schema-base-url: not used in a message since profile v3.0 (no @context is sent); leave the default
   onix:
     caller-url: http://localhost:5055/sygnal/caller     # WireMock; the adaptor appends /sygnal/event/report
     timeout: 20000
@@ -674,17 +674,16 @@ cat > /tmp/event-report.json <<'JSON'
   "message": { "events": [ {
     "@type": "sygnal:CoordinationEvent",
     "id": "b2d6e8f0-1a3c-4e7f-9b1d-3f5a7c9e1b3d",
-    "revision": 1, "eventType": "DELIVERY_RECORDED", "granularity": "INDIVIDUAL",
+    "revision": 1,
+    "eventType": "DELIVERY_RECORDED",
+    "granularity": "INDIVIDUAL",
     "from": { "id": "bap.openmrs.nextsteps.mdtlabs.org", "role": "PROVIDER" },
     "occurredAt": "2026-11-13T08:00:00Z",
-    "eventAttributes": {
-      "@context": "https://raw.githubusercontent.com/openphc/cce-beckn-service/main/schema/CceClinicalEvent/v1.0/context.jsonld",
-      "@type": "cce:CceClinicalEvent",
-      "eventType": "Encounter", "patientId": "UPID-12345", "fhirVersion": "4.0.1",
-      "sourceEventId": "enc-0001",
-      "resource": { "resourceType": "Encounter", "id": "enc-0001", "status": "finished",
-                    "subject": { "reference": "Patient/UPID-12345" } }
-    } } ] }
+    "patientId": "UPID-12345", "fhirVersion": "4.0.1",
+    "sourceEventId": "enc-0001",
+    "resource": { "resourceType": "Encounter", "id": "enc-0001", "status": "finished",
+                  "subject": { "reference": "Patient/UPID-12345" } }
+  } ] }
 }
 JSON
 
@@ -692,7 +691,9 @@ curl -X POST http://localhost:8082/sygnal/event/report \
   -H "Content-Type: application/json" \
   -d @/tmp/event-report.json
 # Expected: 202 {"message":{"status":"ACK","messageId":"c7e1d2f3-…"}}.
-# WireMock shows one POST /sygnal/caller/sygnal/event/report (to CCE) whose events[0].id is b2d6e8f0-… (the same id).
+# WireMock shows one POST /sygnal/caller/sygnal/event/report (to CCE) whose events[0] is a sygnal:CoordinationEvent
+# with the same id, b2d6e8f0-…, "from" = the HIE, and patientId, fhirVersion and resource directly on it
+# (no eventAttributes, no @context).
 ```
 
 More samples: [Beckn Integration §3](beckn-integration.md).
@@ -703,8 +704,11 @@ More samples: [Beckn Integration §3](beckn-integration.md).
 | `context.action` is not `sygnal/event/report` | 400 `Nack` `CTX_ACTION_MISMATCH`; no call to the channel |
 | Unknown `senderId`, or `receiverId` not `beckn.self.id` | 400 `Nack` `CTX_INVALID_FIELD`; no call to the channel |
 | No `messageId` | 400 `Nack` `CTX_MISSING_FIELD`; no call to the channel |
-| Two events, or `id` not a UUID | 400 `Nack` `SCH_SCHEMA_VALIDATION_FAILED`; no call to the channel |
-| `eventAttributes.@type` not `cce:CceClinicalEvent` | 400 `Nack` `SCH_TYPE_NOT_SUPPORTED`; no call to the channel |
+| Two events, `id` not a UUID, `revision` not 1, or `from.id` not the `senderId` | 400 `Nack` `SCH_SCHEMA_VALIDATION_FAILED`; no call to the channel |
+| No `id` or no `occurredAt` | 400 `Nack` `SCH_REQUIRED_FIELD_MISSING`; no call to the channel |
+| `events[0].@type` not `sygnal:CoordinationEvent` (for example the `cce:CceClinicalEvent` of profile v2.0) | 400 `Nack` `SCH_TYPE_NOT_SUPPORTED`; no call to the channel |
+| No `events[0].resource` (for example the event of profile v1.0, with the resource in an `eventAttributes` bag) | 400 `Nack` `SCH_SCHEMA_VALIDATION_FAILED`; no call to the channel |
+| An extra field in the event that the profile does not declare | Ignored: 202 `Ack`; the field is not passed on to CCE |
 | `X-Source-System` names no source | Channel answers 200 `ignored` → 400 `Nack` `BIZ_GENERIC_ERROR` (`ignored: …`); `cce_emitter_beckn_channel_ignored_total` goes up |
 | WireMock returns 400 `BIZ_GENERIC_ERROR` | `/inbound` answers 400 `COLLECTOR_CLIENT_ERROR` → 400 `Nack` `BIZ_GENERIC_ERROR`, text `CCE: <CCE's text>` |
 | WireMock returns 400 `CTX_INVALID_FIELD` | 500 `Nack` `NET_INTERNAL_ERROR` with CCE's text (the HIE's settings are wrong) |

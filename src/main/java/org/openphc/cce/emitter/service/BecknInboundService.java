@@ -97,9 +97,9 @@ public class BecknInboundService {
 
     private BecknAnswer report(JsonNode body) {
         UnwrappedEvent event = unwrapper.unwrap(body);
-        log.info("Sygnal report received: senderId={} transactionId={} messageId={} eventId={} eventType={}",
+        log.info("Sygnal report received: senderId={} transactionId={} messageId={} eventId={} resourceType={}",
                 event.subscriber().subscriberId(), event.transactionId(), event.messageId(),
-                event.eventId(), event.eventType());
+                event.eventId(), event.resource().path("resourceType").asText());
 
         HttpAnswer channelAnswer = channel.post(event.resource(), event.headers());
         BecknAnswer answer = answerMapper.map(channelAnswer);

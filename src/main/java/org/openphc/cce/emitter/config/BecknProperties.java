@@ -10,7 +10,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * Settings of the Sygnal role of this adaptor ({@code beckn.*}). See {@code docs/beckn-integration.md} §7.
  *
  * @param enabled        turns on the {@code sygnal/event/report} endpoint and allows {@code output: beckn}. Default {@code true} on this branch
- * @param schemaBaseUrl  start of the {@code @context} address of the {@code CceClinicalEvent} box
+ * @param schemaBaseUrl  base URL of CCE's schema files. Not used in a message since profile v3.0: no object of a
+ *                       {@code sygnal/event/report} carries an {@code @context}. The setting is kept, so a deployment
+ *                       that sets it is not affected
  * @param onix           this HIE's onix container ({@code onix-openhim})
  * @param self           the HIE's own Sygnal identity
  * @param cce            CCE's Sygnal identity and the retry of the report to CCE
